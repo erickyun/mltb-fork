@@ -36,7 +36,7 @@ async def _on_download_error(err, tor, button=None):
     ext_hash = tor.hash
     if task := await get_task_by_gid(ext_hash[:12]):
         await task.listener.on_download_error(err, button)
-    await sync_to_async(qbittorrent_client.torrents_stop, torrent_hashes=ext_hash)
+    await sync_to_async(qbittorrent_client.torrents_pause, torrent_hashes=ext_hash)
     await sleep(0.3)
     await _remove_torrent(ext_hash, tor.tags)
 
@@ -70,7 +70,7 @@ async def _on_download_complete(tor):
     if task := await get_task_by_gid(ext_hash[:12]):
         if not task.listener.seed:
             await sync_to_async(
-                qbittorrent_client.torrents_stop, torrent_hashes=ext_hash
+                qbittorrent_client.torrents_pause, torrent_hashes=ext_hash
             )
         if task.listener.select:
             await clean_unwanted(task.listener.dir)
@@ -179,7 +179,7 @@ async def _qb_listener():
                             "No enough space for this torrent on device", tor_info
                         )
                     elif (
-                        tor_info.completion_on != -1
+                        tor_info.completion_on != 0
                         and not qb_torrents[tag]["uploaded"]
                         and state
                         not in ["checkingUP", "checkingDL", "checkingResumeData"]
@@ -187,7 +187,7 @@ async def _qb_listener():
                         qb_torrents[tag]["uploaded"] = True
                         await _on_download_complete(tor_info)
                     elif (
-                        state in ["stoppedUP", "stoppedDL"]
+                        state in ["pausedUP", "pausedDL"]
                         and qb_torrents[tag]["seeding"]
                     ):
                         qb_torrents[tag]["seeding"] = False
