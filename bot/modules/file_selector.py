@@ -78,7 +78,7 @@ async def select(_, message):
                 await sync_to_async(task.update)
                 id_ = task.hash()
                 await sync_to_async(
-                    qbittorrent_client.torrents_stop, torrent_hashes=id_
+                    qbittorrent_client.torrents_pause, torrent_hashes=id_
                 )
         elif not task.queued:
             await sync_to_async(task.update)
@@ -137,7 +137,7 @@ async def confirm_selection(_, query):
                                     pass
                 if not task.queued:
                     await sync_to_async(
-                        qbittorrent_client.torrents_start, torrent_hashes=id_
+                        qbittorrent_client.torrents_resume, torrent_hashes=id_
                     )
             else:
                 res = await sync_to_async(aria2.client.get_files, id_)
