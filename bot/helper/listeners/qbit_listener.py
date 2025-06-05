@@ -175,6 +175,10 @@ async def _qb_listener():
                         and not qb_torrents[tag]["uploaded"]
                         and state
                         in [
+                            "queuedUP",
+                            "stalledUP",
+                            "uploading",
+                            "forcedUP",
                             "checkingUP",
                             "checkingDL",
                             "checkingResumeData",
