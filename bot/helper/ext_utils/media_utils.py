@@ -4,7 +4,6 @@ from asyncio import (
     create_subprocess_exec,
     gather,
     wait_for,
-    sleep,
 )
 from asyncio.subprocess import PIPE
 from os import path as ospath
@@ -16,6 +15,9 @@ from ... import LOGGER, cpu_no, DOWNLOAD_DIR
 from .bot_utils import cmd_exec, sync_to_async
 from .files_utils import get_mime_type, is_archive, is_archive_split
 from .status_utils import time_to_seconds
+
+threads = max(1, cpu_no // 2)
+cores = ",".join(str(i) for i in range(threads))
 
 
 async def create_thumb(msg, _id=""):
@@ -126,6 +128,9 @@ async def take_ss(video_file, ss_nb) -> bool:
         for i in range(ss_nb):
             output = f"{dirpath}/SS.{name}_{i:02}.png"
             cmd = [
+                "taskset",
+                "-c",
+                f"{cores}",
                 "ffmpeg",
                 "-hide_banner",
                 "-loglevel",
@@ -138,6 +143,8 @@ async def take_ss(video_file, ss_nb) -> bool:
                 "1",
                 "-frames:v",
                 "1",
+                "-threads",
+                f"{threads}",
                 output,
             ]
             cap_time += interval
@@ -167,6 +174,9 @@ async def get_audio_thumbnail(audio_file):
     await makedirs(output_dir, exist_ok=True)
     output = ospath.join(output_dir, f"{time()}.jpg")
     cmd = [
+        "taskset",
+        "-c",
+        f"{cores}",
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
@@ -176,6 +186,8 @@ async def get_audio_thumbnail(audio_file):
         "-an",
         "-vcodec",
         "copy",
+        "-threads",
+        f"{threads}",
         output,
     ]
     try:
@@ -203,6 +215,9 @@ async def get_video_thumbnail(video_file, duration):
         duration = 3
     duration = duration // 2
     cmd = [
+        "taskset",
+        "-c",
+        f"{cores}",
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
@@ -217,6 +232,8 @@ async def get_video_thumbnail(video_file, duration):
         "1",
         "-frames:v",
         "1",
+        "-threads",
+        f"{threads}",
         output,
     ]
     try:
@@ -244,6 +261,9 @@ async def get_multiple_frames_thumbnail(video_file, layout, keep_screenshots):
     await makedirs(output_dir, exist_ok=True)
     output = ospath.join(output_dir, f"{time()}.jpg")
     cmd = [
+        "taskset",
+        "-c",
+        f"{cores}",
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
@@ -260,6 +280,8 @@ async def get_multiple_frames_thumbnail(video_file, layout, keep_screenshots):
         "1",
         "-f",
         "mjpeg",
+        "-threads",
+        f"{threads}",
         output,
     ]
     try:
@@ -359,7 +381,6 @@ class FFMpeg:
                         except:
                             self._progress_raw = 0
                             self._eta_raw = 0
-            await sleep(0.05)
 
     async def ffmpeg_cmds(self, ffmpeg, f_path):
         self.clear()
@@ -438,6 +459,8 @@ class FFMpeg:
                 "libx264",
                 "-c:a",
                 "aac",
+                "-threads",
+                f"{threads}",
                 output,
             ]
             if ext == "mp4":
@@ -460,6 +483,8 @@ class FFMpeg:
                 "0",
                 "-c",
                 "copy",
+                "-threads",
+                f"{threads}",
                 output,
             ]
         if self._listener.is_cancelled:
@@ -505,6 +530,8 @@ class FFMpeg:
             "pipe:1",
             "-i",
             audio_file,
+            "-threads",
+            f"{threads}",
             output,
         ]
         if self._listener.is_cancelled:
@@ -583,6 +610,8 @@ class FFMpeg:
             "libx264",
             "-c:a",
             "aac",
+            "-threads",
+            f"{threads}",
             output_file,
         ]
 
@@ -646,6 +675,8 @@ class FFMpeg:
                 "-2",
                 "-c",
                 "copy",
+                "-threads",
+                f"{threads}",
                 out_path,
             ]
             if not multi_streams:
