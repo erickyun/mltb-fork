@@ -209,6 +209,8 @@ def get_mime_type(file_path):
 
 async def remove_excluded_files(fpath, ee):
     for root, _, files in await sync_to_async(walk, fpath):
+        if root.strip().endswith("/yt-dlp-thumb"):
+            continue
         for f in files:
             if f.strip().lower().endswith(tuple(ee)):
                 await remove(ospath.join(root, f))
@@ -322,7 +324,7 @@ class SevenZ:
                 break
             line = line.decode().strip()
             if match := re_search(pattern, line):
-                self._listener.subsize = int(match[1] or match[2])
+                self._listener.subsize = int(match[1] or match[2] or match[3])
         s = b""
         while not (
             self._listener.is_cancelled
