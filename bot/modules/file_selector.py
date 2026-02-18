@@ -81,7 +81,7 @@ async def select(_, message):
                 await sabnzbd_client.pause_job(id_)
             elif task.listener.is_qbit:
                 id_ = task.hash()
-                await TorrentManager.qbittorrent.torrents.stop([id_])
+                await TorrentManager.qbittorrent.torrents.pause([id_])
             else:
                 try:
                     await TorrentManager.aria2.forcePause(id_)
@@ -133,7 +133,7 @@ async def confirm_selection(_, query):
                                 except:
                                     pass
                 if not task.queued:
-                    await TorrentManager.qbittorrent.torrents.start([id_])
+                    await TorrentManager.qbittorrent.torrents.resume([id_])
             else:
                 res = await TorrentManager.aria2.getFiles(id_)
                 for f in res:
