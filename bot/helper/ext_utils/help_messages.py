@@ -103,7 +103,7 @@ If DEFAULT_UPLOAD is `gd` then you can pass up: `rc` to upload to RCLONE_PATH.
 If DEFAULT_UPLOAD is `bh` or `gf` then you can pass up: `rc` to upload to RCLONE_PATH.
 If DEFAULT_UPLOAD is `gd` then you can pass up: `bh` to upload to BUZZHEAVIER or `gf` to upload to GoFile.
 GoFile uses GOFILE_API_KEY when configured; otherwise guest upload is used.
-cb: Catbox / lb: Litterbox temporary upload /pd: PixelDrain / vf: VikingFile / imgur: Imgur image upload / ic: ImgChest image upload / ibb: ImgBB image upload
+cb: Catbox / lb: Litterbox temporary upload / pd: PixelDrain / vf: VikingFile / imgur: Imgur image upload / ic: ImgChest image upload / ibb: ImgBB image upload
 
 If you want to add path or gdrive manually from your config/token (UPLOADED FROM USETTING) add mrcc: for rclone and mtp: before the path/gdrive_id without space.
 /cmd link -up mrcc:main:dump or -up mtp:gdrive_id <strong>OR you can simply edit upload using owner/user|token/config from usetting without adding mtp: or mrcc: before the upload path/id</strong>
