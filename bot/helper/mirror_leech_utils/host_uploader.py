@@ -305,7 +305,6 @@ class HostUploader:
 
         fields = {
             "privacy": "hidden",
-            "anonymous": "false",
         }
 
         payload = await self._post_multipart(
