@@ -38,12 +38,14 @@ from ..mirror_leech_utils.gdrive_utils.upload import GoogleDriveUpload
 from ..mirror_leech_utils.rclone_utils.transfer import RcloneTransferHelper
 from ..mirror_leech_utils.buzzheavier_uploader import BuzzHeavierUploader
 from ..mirror_leech_utils.gofile_uploader import GoFileUploader
+from ..mirror_leech_utils.host_uploader import HostUploader
 from ..mirror_leech_utils.status_utils.gdrive_status import GoogleDriveStatus
 from ..mirror_leech_utils.status_utils.queue_status import QueueStatus
 from ..mirror_leech_utils.status_utils.rclone_status import RcloneStatus
 from ..mirror_leech_utils.status_utils.telegram_status import TelegramStatus
 from ..mirror_leech_utils.status_utils.buzzheavier_status import BuzzHeavierStatus
 from ..mirror_leech_utils.status_utils.gofile_status import GoFileStatus
+from ..mirror_leech_utils.status_utils.host_status import HostUploadStatus
 from ..mirror_leech_utils.telegram_uploader import TelegramUploader
 from ..telegram_helper.button_build import ButtonMaker
 from ..telegram_helper.message_utils import (
@@ -325,6 +327,16 @@ class TaskListener(TaskConfig):
                 gf.upload(),
             )
             del gf
+        elif self.direct_upload:
+            LOGGER.info(f"{self.direct_upload.upper()} Upload Name: {self.name}")
+            host = HostUploader(self, up_path, self.direct_upload)
+            async with task_dict_lock:
+                task_dict[self.mid] = HostUploadStatus(self, host, gid, "up")
+            await gather(
+                update_status_message(self.message.chat.id),
+                host.upload(),
+            )
+            del host
         elif is_gdrive_id(self.up_dest):
             LOGGER.info(f"Gdrive Upload Name: {self.name}")
             drive = GoogleDriveUpload(self, up_path)
@@ -358,7 +370,7 @@ class TaskListener(TaskConfig):
             await database.rm_complete_task(self.message.link)
         msg = f"<b>Name: </b><code>{escape(self.name)}</code>\n\n<b>Size: </b>{get_readable_file_size(self.size)}"
         LOGGER.info(f"Task Done: {self.name}")
-        if self.is_leech or self.is_buzzheavier:
+        if self.is_leech:
             msg += f"\n<b>Total Files: </b>{folders}"
             if mime_type != 0:
                 msg += f"\n<b>Corrupted Files: </b>{mime_type}"
