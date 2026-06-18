@@ -14,6 +14,13 @@ class Config:
     BASE_URL_PORT = 80
     BOT_TOKEN = ""
     BUZZHEAVIER_ACCOUNT_ID = ""
+    CATBOX_USER_HASH = ""
+    LITTERBOX_TIME = "1h"
+    PIXELDRAIN_API_KEY = ""
+    VIKINGFILE_USER_HASH = ""
+    IMGUR_CLIENT_ID = ""
+    IMGCHEST_API_KEY = ""
+    IMGBB_API_KEY = ""
     GOFILE_API_KEY = ""
     CMD_SUFFIX = ""
     CLONE_DUMP_CHATS = ""
@@ -157,7 +164,7 @@ class Config:
         if isinstance(converted_value, str):
             converted_value = converted_value.strip()
 
-        if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf"}:
+        if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf", "cb", "lb", "pd", "vf", "imgur", "ic", "ibb"}:
             return "rc"
 
         if attr in {
