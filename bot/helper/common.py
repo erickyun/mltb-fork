@@ -90,6 +90,7 @@ class TaskConfig:
         self._alldebrid_magnet_id = 0
         self._torbox_torrent_id = 0
         self._torbox_web_id = 0
+        self.direct_upload = None
         self.is_leech = False
         self.is_qbit = False
         self.is_nzb = False
@@ -277,16 +278,20 @@ class TaskConfig:
         default_upload = (
             self.user_dict.get("DEFAULT_UPLOAD", "") or Config.DEFAULT_UPLOAD
         )
+        DIRECT_UPLOADS = {"cb", "lb", "pd", "vf", "imgur", "ic", "ibb"}
+        
         if default_upload == "bh" or self.up_dest == "bh":
             self.is_buzzheavier = True
         elif default_upload == "gf" or self.up_dest == "gf":
             self.is_gofile = True
+        elif default_upload in DIRECT_UPLOADS or self.up_dest in DIRECT_UPLOADS:
+            self.direct_upload = self.up_dest or default_upload
 
         self.files_links = self.user_dict.get("FILES_LINKS", False) or (
             Config.FILES_LINKS if "FILES_LINKS" not in self.user_dict else False
         )
 
-        if not self.is_leech and not self.is_buzzheavier and not self.is_gofile:
+        if not self.is_leech and not self.is_buzzheavier and not self.is_gofile and not self.direct_upload:
             self.stop_duplicate = (
                 self.user_dict.get("STOP_DUPLICATE")
                 or "STOP_DUPLICATE" not in self.user_dict
@@ -351,7 +356,7 @@ class TaskConfig:
                     self.link
                 ) != self.get_config_path(self.up_dest):
                     raise ValueError("You must use the same config to clone!")
-        elif not self.is_buzzheavier and not self.is_gofile:
+        elif not self.is_buzzheavier and not self.is_gofile and not self.direct_upload:
             self.up_dest = (
                 self.up_dest
                 or self.user_dict.get("LEECH_DUMP_CHAT")
