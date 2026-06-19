@@ -278,70 +278,70 @@ class HostUploader:
         return link
 
     async def _upload_krakenfiles(self, client, file_path):
-    api_key = (Config.KRAKENFILES_API_KEY or "").strip()
+        api_key = (Config.KRAKENFILES_API_KEY or "").strip()
 
-    file_size = await aiopath.getsize(file_path)
+        file_size = await aiopath.getsize(file_path)
 
-    # KrakenFiles anonymous limit: 1 GB
-    # KrakenFiles account/API key limit: 2 GB
-    if api_key:
-        if file_size > 2 * 1024 * 1024 * 1024:
-            raise RuntimeError("KrakenFiles limit is 2 GB with API key")
-    else:
-        if file_size > 1 * 1024 * 1024 * 1024:
-            raise RuntimeError("KrakenFiles anonymous limit is 1 GB")
+        # KrakenFiles anonymous limit: 1 GB
+        # KrakenFiles account/API key limit: 2 GB
+        if api_key:
+            if file_size > 2 * 1024 * 1024 * 1024:
+                raise RuntimeError("KrakenFiles limit is 2 GB with API key")
+        else:
+            if file_size > 1 * 1024 * 1024 * 1024:
+                raise RuntimeError("KrakenFiles anonymous limit is 1 GB")
 
-    headers = {
-        "Accept": "application/json",
-    }
+        headers = {
+            "Accept": "application/json",
+        }
 
-    if api_key:
-        headers["X-AUTH-TOKEN"] = api_key
+        if api_key:
+            headers["X-AUTH-TOKEN"] = api_key
 
-    server_response = await client.get(
-        "https://krakenfiles.com/api/server/available",
-        headers={"Accept": "application/json"},
-    )
-
-    if server_response.status_code >= 400:
-        raise RuntimeError(
-            f"KrakenFiles server lookup failed [{server_response.status_code}]: "
-            f"{server_response.text[:300]}"
+        server_response = await client.get(
+            "https://krakenfiles.com/api/server/available",
+            headers={"Accept": "application/json"},
         )
 
-    try:
-        server_payload = server_response.json()
-    except ValueError as exc:
-        raise RuntimeError(
-            f"KrakenFiles returned non-JSON server response: "
-            f"{server_response.text[:300]}"
-        ) from exc
+        if server_response.status_code >= 400:
+            raise RuntimeError(
+                f"KrakenFiles server lookup failed [{server_response.status_code}]: "
+                f"{server_response.text[:300]}"
+            )
 
-    data = server_payload.get("data", {})
-    upload_url = data.get("url")
-    server_access_token = data.get("serverAccessToken")
+        try:
+            server_payload = server_response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"KrakenFiles returned non-JSON server response: "
+                f"{server_response.text[:300]}"
+            ) from exc
 
-    if not upload_url or not server_access_token:
-        raise RuntimeError(f"KrakenFiles server response missing data: {server_payload}")
+        data = server_payload.get("data", {})
+        upload_url = data.get("url")
+        server_access_token = data.get("serverAccessToken")
 
-    payload = await self._post_multipart(
-        client,
-        upload_url,
-        file_path,
-        {
-            "serverAccessToken": server_access_token,
-        },
-        "file",
-        headers=headers,
-        json_response=True,
-    )
+        if not upload_url or not server_access_token:
+            raise RuntimeError(f"KrakenFiles server response missing data: {server_payload}")
 
-    link = payload.get("data", {}).get("url")
+        payload = await self._post_multipart(
+            client,
+            upload_url,
+            file_path,
+            {
+                "serverAccessToken": server_access_token,
+            },
+            "file",
+            headers=headers,
+            json_response=True,
+        )
 
-    if not link:
-        raise RuntimeError(f"KrakenFiles response missing url: {payload}")
+        link = payload.get("data", {}).get("url")
 
-    return link
+        if not link:
+            raise RuntimeError(f"KrakenFiles response missing url: {payload}")
+
+        return link
 
     async def _upload_imgur(self, client, file_path):
         client_id = (Config.IMGUR_CLIENT_ID or "").strip()
