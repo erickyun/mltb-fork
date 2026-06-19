@@ -18,7 +18,7 @@ LOGGER = getLogger(__name__)
 _UPLOAD_CHUNK = 1024 * 1024
 _HTTP_TIMEOUT = Timeout(connect=30.0, read=600.0, write=600.0, pool=30.0)
 
-IMAGE_HOSTS = {"imgur", "ic", "ibb"}
+IMAGE_HOSTS = {"ibb"}
 IMAGE_EXTS = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff"
 }
