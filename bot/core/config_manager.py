@@ -21,6 +21,7 @@ class Config:
     IMGUR_CLIENT_ID = ""
     IMGCHEST_API_KEY = ""
     IMGBB_API_KEY = ""
+    KRAKENFILES_API_KEY = ""
     GOFILE_API_KEY = ""
     CMD_SUFFIX = ""
     CLONE_DUMP_CHATS = ""
@@ -164,7 +165,7 @@ class Config:
         if isinstance(converted_value, str):
             converted_value = converted_value.strip()
 
-        if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf", "cb", "lb", "pd", "vf", "imgur", "ic", "ibb"}:
+        if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf", "cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf"}:
             return "rc"
 
         if attr in {
