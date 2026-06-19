@@ -21,6 +21,7 @@ class Config:
     IMGUR_CLIENT_ID = ""
     IMGCHEST_API_KEY = ""
     IMGBB_API_KEY = ""
+    KRAKENFILES_API_KEY = ""
     GOFILE_API_KEY = ""
     CMD_SUFFIX = ""
     CLONE_DUMP_CHATS = ""
