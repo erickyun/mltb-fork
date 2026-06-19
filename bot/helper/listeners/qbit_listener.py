@@ -36,7 +36,7 @@ async def _on_download_error(err, tor, button=None):
     ext_hash = tor.hash
     if task := await get_task_by_gid(ext_hash[:12]):
         await task.listener.on_download_error(err, button)
-    await TorrentManager.qbittorrent.torrents.stop([ext_hash])
+    await TorrentManager.qbittorrent.torrents.pause([ext_hash])
     await sleep(0.3)
     await _remove_torrent(ext_hash, tor.tags[0])
 
@@ -69,7 +69,7 @@ async def _on_download_complete(tor):
     tag = tor.tags[0]
     if task := await get_task_by_gid(ext_hash[:12]):
         if not task.listener.seed:
-            await TorrentManager.qbittorrent.torrents.stop([ext_hash])
+            await TorrentManager.qbittorrent.torrents.pause([ext_hash])
         if task.listener.select:
             await clean_unwanted(task.listener.dir)
             path = tor.content_path.rsplit("/", 1)[0]
@@ -171,13 +171,25 @@ async def _qb_listener():
                             "No enough space for this torrent on device", tor_info
                         )
                     elif (
-                        int(tor_info.completion_on.timestamp()) != -1
+                        int(tor_info.completion_on.timestamp()) != 0
                         and not qb_torrents[tag]["uploaded"]
+                        and state
+                        in [
+                            "queuedUP",
+                            "stalledUP",
+                            "uploading",
+                            "forcedUP",
+                            "checkingUP",
+                            "checkingDL",
+                            "checkingResumeData",
+                            "stoppedUP",
+                            "stoppedDL",
+                        ]
                     ):
                         qb_torrents[tag]["uploaded"] = True
                         await _on_download_complete(tor_info)
                     elif (
-                        state in ["stoppedUP", "stoppedDL"]
+                        state in ["pausedUP", "pausedDL"]
                         and qb_torrents[tag]["seeding"]
                     ):
                         qb_torrents[tag]["seeding"] = False

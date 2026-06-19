@@ -96,6 +96,7 @@ class BuzzHeavierUploader:
         corrupted = 0
         error = ""
         files_dict = {}
+        first_link = ""
         if await aiopath.isfile(self._path):
             files.append(self._path)
         else:
@@ -130,6 +131,8 @@ class BuzzHeavierUploader:
                         return
                     if self._listener.is_cancelled:
                         return
+                    if not first_link:
+                        first_link = link
                     if self._listener.files_links:
                         files_dict[link] = ospath.basename(file_path)
         except Exception as exc:
@@ -149,10 +152,10 @@ class BuzzHeavierUploader:
             f"Uploaded To BuzzHeavier: {self._listener.name} - {total_files - corrupted} files"
         )
         await self._listener.on_upload_complete(
-            None,
+            first_link,
             files_dict,
             total_files,
-            corrupted,
+            "BuzzHeavier",
         )
 
     async def cancel_task(self):

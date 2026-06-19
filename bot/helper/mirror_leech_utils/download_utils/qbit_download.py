@@ -111,7 +111,7 @@ async def add_qb_torrent(listener, path, ratio, seed_time):
                         if tor_info.state not in [
                             "metaDL",
                             "checkingResumeData",
-                            "stoppedDL",
+                            "pausedDL",
                         ]:
                             await delete_message(meta)
                             break
@@ -121,7 +121,7 @@ async def add_qb_torrent(listener, path, ratio, seed_time):
 
             ext_hash = tor_info.hash
             if not add_to_queue:
-                await TorrentManager.qbittorrent.torrents.stop([ext_hash])
+                await TorrentManager.qbittorrent.torrents.pause([ext_hash])
             SBUTTONS = bt_selection_buttons(ext_hash)
             msg = "Your download paused. Choose files then press Done Selecting button to start downloading."
             await send_message(listener.message, msg, SBUTTONS)
@@ -139,7 +139,7 @@ async def add_qb_torrent(listener, path, ratio, seed_time):
                     f"Start Queued Download from Qbittorrent: {tor_info.name} - Hash: {ext_hash}"
                 )
             await on_download_start(f"{listener.mid}")
-            await TorrentManager.qbittorrent.torrents.start([ext_hash])
+            await TorrentManager.qbittorrent.torrents.resume([ext_hash])
     except (ClientError, TimeoutError, Exception, AQError) as e:
         if f"{listener.mid}" in qb_torrents:
             del qb_torrents[f"{listener.mid}"]
