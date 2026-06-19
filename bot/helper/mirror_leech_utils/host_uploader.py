@@ -440,7 +440,7 @@ class HostUploader:
             return await self._upload_vikingfile(client, file_path)
 
         if self._host == "kf":
-    return await self._upload_krakenfiles(client, file_path)
+            return await self._upload_krakenfiles(client, file_path)
 
         if self._host == "imgur":
             return await self._upload_imgur(client, file_path)
