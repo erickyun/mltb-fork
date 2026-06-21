@@ -22,6 +22,7 @@ class Config:
     IMGCHEST_API_KEY = ""
     IMGBB_API_KEY = ""
     KRAKENFILES_API_KEY = ""
+    URL_SHORTENER = "spoome"
     GOFILE_API_KEY = ""
     CMD_SUFFIX = ""
     CLONE_DUMP_CHATS = ""
@@ -167,6 +168,11 @@ class Config:
 
         if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf", "cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf"}:
             return "rc"
+
+        if attr == "URL_SHORTENER" and converted_value not in {
+            "spoome", "xgd", "cleanuri", "isgd"
+        }:
+            return "spoome"
 
         if attr in {
             "BASE_URL",
