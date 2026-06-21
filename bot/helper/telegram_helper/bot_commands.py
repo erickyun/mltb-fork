@@ -25,6 +25,7 @@ class BotCommands:
     ListCommand = f"list{i}"
     SearchCommand = f"search{i}"
     StatusCommand = f"status{i}"
+    ShortCommand = f"short{i}"
     UsersCommand = f"users{i}"
     AuthorizeCommand = f"auth{i}"
     UnAuthorizeCommand = f"unauth{i}"
