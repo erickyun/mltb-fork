@@ -64,6 +64,7 @@ DEFAULT_VALUES = {
     "SEARCH_LIMIT": 0,
     "UPSTREAM_BRANCH": "master",
     "DEFAULT_UPLOAD": "rc",
+    "URL_SHORTENER": "spoome",
 }
 
 
