@@ -279,6 +279,13 @@ def add_handlers():
         )
     )
     TgClient.bot.add_handler(
+        MessageHandler(
+            short_url,
+            filters=command(BotCommands.ShortCommand, case_sensitive=True)
+            & CustomFilters.authorized,
+        )
+    )
+    TgClient.bot.add_handler(
         CallbackQueryHandler(torrent_search_update, filters=regex("^torser"))
     )
     TgClient.bot.add_handler(
