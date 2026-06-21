@@ -20,6 +20,7 @@ class Config:
     DATABASE_URL = ""
     DATABASE_NAME = "mltb"
     DEFAULT_UPLOAD = "rc"
+    URL_SHORTENER = "spoome"
     EQUAL_SPLITS = False
     EXCLUDED_EXTENSIONS = ""
     INCLUDED_EXTENSIONS = ""
@@ -159,6 +160,11 @@ class Config:
 
         if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf"}:
             return "rc"
+
+        if attr == "URL_SHORTENER" and converted_value not in {
+            "spoome", "xgd", "cleanuri", "isgd"
+        }:
+            return "spoome"
 
         if attr in {
             "BASE_URL",
