@@ -53,6 +53,7 @@ from ..helper.mirror_leech_utils.download_utils.telegram_download import (
     TelegramDownloadHelper,
 )
 from ..helper.telegram_helper.message_utils import send_message, get_tg_link_message
+from ..helper.ext_utils.stream_utils import send_stream_links
 
 
 class Mirror(TaskListener):
@@ -108,6 +109,7 @@ class Mirror(TaskListener):
             "-ut": False,
             "-ad": False,
             "-tb": False,
+            "-st": False,
             "-i": 0,
             "-sp": 0,
             "link": "",
@@ -126,7 +128,12 @@ class Mirror(TaskListener):
             "-ff": set(),
         }
 
-        arg_parser(input_list[1:], args)
+        input_args = input_list[1:]
+        if "-st" in input_args:
+            args["-st"] = True
+            input_args = [item for item in input_args if item != "-st"]
+
+        arg_parser(input_args, args)
 
         self.select = args["-s"]
         self.seed = args["-d"]
@@ -156,6 +163,7 @@ class Mirror(TaskListener):
         self.user_trans = args["-ut"]
         self.is_alldebrid = args["-ad"]
         self.is_torbox = args["-tb"]
+        self.stream_links = args["-st"]
         self.ffmpeg_cmds = args["-ff"]
 
         headers = args["-h"]
@@ -290,6 +298,11 @@ class Mirror(TaskListener):
             ):
                 self.link = await reply_to.download()
                 file_ = None
+
+        if self.stream_links and file_ is not None and not self.link:
+            await send_stream_links(self, reply_to)
+            await self.remove_from_same_dir()
+            return
 
         if (
             not self.link
