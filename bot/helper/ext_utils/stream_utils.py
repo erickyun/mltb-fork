@@ -86,10 +86,7 @@ def build_stream_links(message):
 def build_buttons(stream_link, download_link):
     return InlineKeyboardMarkup(
         [
-            [
-                InlineKeyboardButton("🔗 Open", url=stream_link),
-                InlineKeyboardButton("⬇️ Download", url=download_link),
-            ]
+            [InlineKeyboardButton("🔗 Open", url=stream_link)]
         ]
     )
 
