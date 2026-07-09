@@ -23,6 +23,8 @@ class Config:
     IMGBB_API_KEY = ""
     KRAKENFILES_API_KEY = ""
     URL_SHORTENER = "spoome"
+    URL_SHORTENER_PROXY = ""
+    TLY_API_TOKEN = ""
     GOFILE_API_KEY = ""
     CMD_SUFFIX = ""
     CLONE_DUMP_CHATS = ""
@@ -174,7 +176,7 @@ class Config:
             return "rc"
 
         if attr == "URL_SHORTENER" and converted_value not in {
-            "spoome", "xgd", "cleanuri", "isgd"
+            "spoome", "xgd", "tly", "cleanuri", "isgd"
         }:
             return "spoome"
 
