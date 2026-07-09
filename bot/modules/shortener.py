@@ -51,7 +51,7 @@ async def short_url(_, message):
             message,
             "<b>Send URL or reply to URL.</b>\n\n"
             "<code>/short https://example.com</code>\n"
-            "<code>/short cleanuri https://example.com</code>\n\n"
+            "<code>/short tly https://example.com</code>\n\n"
             f"Hosts: <code>{hosts}</code>",
         )
         return
