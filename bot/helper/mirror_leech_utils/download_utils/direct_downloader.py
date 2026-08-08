@@ -10,7 +10,9 @@ from ...ext_utils.task_manager import check_running_tasks, stop_duplicate_check
 from ...listeners.direct_listener import DirectListener
 from ...mirror_leech_utils.status_utils.direct_status import DirectStatus
 from ...mirror_leech_utils.status_utils.queue_status import QueueStatus
-from ...telegram_helper.message_utils import send_message, send_status_message
+from ...telegram_helper.message_utils import send_status_message
+from .aria2_download import add_aria2_download
+from .jd_download import add_jd_download
 
 
 async def add_direct_download(listener, path):
@@ -22,11 +24,19 @@ async def add_direct_download(listener, path):
 
     if torbox_torrent_id := details.get("torbox_torrent_id"):
         torbox_name = details.get("title") or "TorBox"
-        torbox_url = (
+        listener.link = (
             f"https://torbox.app/download?id={torbox_torrent_id}"
             f"&type=torrents&name={quote(str(torbox_name), safe='')}"
         )
-        await send_message(listener.message, f"TorBox Download:\n{torbox_url}")
+        LOGGER.info(f"TorBox downloader URL: {listener.link}")
+
+        if listener.is_jd:
+            # JDownloader calculates the package size itself.
+            listener.size = 0
+            await add_jd_download(listener, path)
+        else:
+            await add_aria2_download(listener, path, [], None, None)
+        return
 
     if not listener.name:
         listener.name = details["title"]
