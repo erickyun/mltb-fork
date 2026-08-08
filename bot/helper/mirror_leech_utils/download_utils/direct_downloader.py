@@ -11,7 +11,6 @@ from ...listeners.direct_listener import DirectListener
 from ...mirror_leech_utils.status_utils.direct_status import DirectStatus
 from ...mirror_leech_utils.status_utils.queue_status import QueueStatus
 from ...telegram_helper.message_utils import send_status_message
-from .aria2_download import add_aria2_download
 from .jd_download import add_jd_download
 
 
@@ -22,24 +21,25 @@ async def add_direct_download(listener, path):
         return
     listener.size = details["total_size"]
 
-    if torbox_torrent_id := details.get("torbox_torrent_id"):
+    if not listener.name:
+        listener.name = details["title"]
+
+    # JDownloader can resolve TorBox's dashboard download URL itself.
+    # Aria2 cannot: it saves the intermediate response as a file named
+    # "download". For Aria2 (/m and /l), keep using the real TorBox CDN
+    # URLs already present in `contents` below.
+    if (torbox_torrent_id := details.get("torbox_torrent_id")) and listener.is_jd:
         torbox_name = details.get("title") or "TorBox"
         listener.link = (
             f"https://torbox.app/download?id={torbox_torrent_id}"
             f"&type=torrents&name={quote(str(torbox_name), safe='')}"
         )
-        LOGGER.info(f"TorBox downloader URL: {listener.link}")
-
-        if listener.is_jd:
-            # JDownloader calculates the package size itself.
-            listener.size = 0
-            await add_jd_download(listener, path)
-        else:
-            await add_aria2_download(listener, path, [], None, None)
+        LOGGER.info(f"TorBox JDownloader URL: {listener.link}")
+        # JDownloader calculates the package size itself.
+        listener.size = 0
+        await add_jd_download(listener, path)
         return
 
-    if not listener.name:
-        listener.name = details["title"]
     path = f"{path}/{listener.name}"
 
     msg, button = await stop_duplicate_check(listener)
