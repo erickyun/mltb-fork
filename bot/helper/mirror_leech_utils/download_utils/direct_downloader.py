@@ -1,4 +1,5 @@
 from secrets import token_urlsafe
+from urllib.parse import quote
 
 from .... import (
     LOGGER,
@@ -9,7 +10,7 @@ from ...ext_utils.task_manager import check_running_tasks, stop_duplicate_check
 from ...listeners.direct_listener import DirectListener
 from ...mirror_leech_utils.status_utils.direct_status import DirectStatus
 from ...mirror_leech_utils.status_utils.queue_status import QueueStatus
-from ...telegram_helper.message_utils import send_status_message
+from ...telegram_helper.message_utils import send_message, send_status_message
 
 
 async def add_direct_download(listener, path):
@@ -18,6 +19,14 @@ async def add_direct_download(listener, path):
         await listener.on_download_error("There is nothing to download!")
         return
     listener.size = details["total_size"]
+
+    if torbox_torrent_id := details.get("torbox_torrent_id"):
+        torbox_name = details.get("title") or "TorBox"
+        torbox_url = (
+            f"https://torbox.app/download?id={torbox_torrent_id}"
+            f"&type=torrents&name={quote(str(torbox_name), safe='')}"
+        )
+        await send_message(listener.message, f"TorBox Download:\n{torbox_url}")
 
     if not listener.name:
         listener.name = details["title"]
