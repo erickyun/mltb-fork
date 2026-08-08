@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from os import path as ospath
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlencode
 
 from httpx import AsyncClient, HTTPError
 
@@ -298,39 +299,50 @@ async def _request_file_link(kind: str, item_id: int | str, file_id: int | str) 
     raise DirectDownloadLinkException(f"ERROR: TorBox requestdl failed: {last_exc}")
 
 
+def _request_file_permalink(kind: str, item_id: int | str, file_id: int | str) -> str:
+    endpoint = "/torrents/requestdl" if kind == "torrent" else "/webdl/requestdl"
+    id_key = "torrent_id" if kind == "torrent" else "web_id"
+    params = {
+        "token": _token(),
+        id_key: str(item_id),
+        "file_id": str(file_id),
+        "redirect": "true",
+        "append_name": "true",
+    }
+    return f"{_API_BASE}{endpoint}?{urlencode(params)}"
+
+
 async def _payload(item: dict[str, Any], kind: str, item_id: int | str) -> dict[str, Any]:
     files = item.get("files") or []
 
     if not isinstance(files, list) or not files:
         raise DirectDownloadLinkException("ERROR: TorBox returned no files")
 
-    semaphore = asyncio.Semaphore(_UNLOCK_CONCURRENCY)
     contents: list[dict[str, Any]] = []
 
-    async def one(file_item: dict[str, Any]):
+    for file_item in files:
+        if not isinstance(file_item, dict):
+            continue
+
         file_id = file_item.get("id")
         if file_id is None:
-            return
-
-        async with semaphore:
-            direct = await _request_file_link(kind, item_id, file_id)
+            continue
 
         full_name = file_item.get("name") or file_item.get("short_name") or "file"
+        permalink = _request_file_permalink(kind, item_id, file_id)
 
         contents.append(
             {
                 "filename": file_item.get("short_name") or _basename(full_name),
                 "path": full_name,
-                "url": direct,
+                "url": permalink,
                 "size": int(file_item.get("size") or 0),
                 "headers": {},
             }
         )
 
-    await asyncio.gather(*(one(f) for f in files if isinstance(f, dict)))
-
     if not contents:
-        raise DirectDownloadLinkException("ERROR: TorBox could not create direct links")
+        raise DirectDownloadLinkException("ERROR: TorBox could not create download permalinks")
 
     return {
         "title": item.get("name") or "TorBox",
