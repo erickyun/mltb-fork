@@ -1,7 +1,7 @@
 from sys import executable
 from aiofiles import open as aiopen
 from aiofiles.os import path as aiopath, remove
-from asyncio import gather, create_subprocess_exec
+from asyncio import gather, create_subprocess_exec, wait_for
 from os import execl as osexecl
 
 from .. import intervals, scheduler, sabnzbd_client, LOGGER
@@ -88,7 +88,16 @@ async def confirm_restart(_, query):
         intervals["stopAll"] = True
         restart_message = await send_message(reply_to, "Restarting...")
         await delete_message(message)
-        await TgClient.stop()
+        try:
+            await wait_for(TgClient.stop(), timeout=30)
+        except TimeoutError:
+            LOGGER.exception(
+                "Telegram shutdown timed out; continuing restart"
+            )
+        except Exception:
+            LOGGER.exception(
+                "Telegram shutdown failed; continuing restart"
+            )
         if scheduler.running:
             scheduler.shutdown(wait=False)
         if qb := intervals["qb"]:
