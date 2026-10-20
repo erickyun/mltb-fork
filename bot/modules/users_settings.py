@@ -272,8 +272,8 @@ Stop Duplicate is <b>{sd_msg}</b>"""
             or "Root"
         )
         text = (
-            f"<u>Buzzheavier Settings for {name}</u>\\n"
-            f"Account ID: <b>{'Set' if has_account else 'Not Set'}</b>\\n"
+            f"<u>Buzzheavier Settings for {name}</u>\n"
+            f"Account ID: <b>{'Set' if has_account else 'Not Set'}</b>\n"
             f"Folder ID: <code>{escape(current_folder)}</code>"
         )
     else:
