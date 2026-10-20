@@ -14,6 +14,7 @@ class Config:
     BASE_URL_PORT = 80
     BOT_TOKEN = ""
     BUZZHEAVIER_ACCOUNT_ID = ""
+    BUZZHEAVIER_FOLDER_ID = ""
     CATBOX_USER_HASH = ""
     LITTERBOX_TIME = "1h"
     PIXELDRAIN_API_KEY = ""

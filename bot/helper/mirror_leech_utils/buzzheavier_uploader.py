@@ -1,27 +1,21 @@
 from logging import getLogger
 from time import time
 from os import path as ospath, walk
+import traceback
 from aiofiles.os import path as aiopath
 from aiofiles import open as aiopen
 from asyncio import CancelledError
-from httpx import AsyncClient, HTTPError, Limits, Timeout
+from httpx import AsyncClient, Limits, Timeout, HTTPError
 
 from ..ext_utils.bot_utils import sync_to_async
+from ..ext_utils.files_utils import get_mime_type
 from ...core.config_manager import Config
 
 LOGGER = getLogger(__name__)
 
 _UPLOAD_BASE = "https://w.buzzheavier.com"
-_UPLOAD_CHUNK = 16 * 1024 * 1024
+
 _HTTP_TIMEOUT = Timeout(connect=30.0, read=600.0, write=600.0, pool=30.0)
-
-
-def _auth_headers():
-    headers = {}
-    account_id = (Config.BUZZHEAVIER_ACCOUNT_ID or "").strip()
-    if account_id:
-        headers["Authorization"] = f"Bearer {account_id}"
-    return headers
 
 
 class BuzzHeavierUploader:
@@ -31,6 +25,32 @@ class BuzzHeavierUploader:
         self._path = path
         self._processed_bytes = 0
         self._start_time = time()
+        self._files = 0
+        self._folders = 0
+        self._root_id_cache = None
+        self._client = None
+        self._account_id = (Config.BUZZHEAVIER_ACCOUNT_ID or "").strip()
+        self.user_settings()
+
+    def user_settings(self):
+        self._listener.up_dest = self._listener.up_dest or ""
+        if self._listener.up_dest.startswith("mt:"):
+            self._account_id = self._listener.user_dict.get(
+                "BUZZHEAVIER_ACCOUNT_ID", ""
+            ).strip()
+            if not self._account_id:
+                raise ValueError(
+                    "BUZZHEAVIER_ACCOUNT_ID is required to be filled in user settings to upload to your own account!"
+                )
+            self._listener.up_dest = (
+                self._listener.up_dest.removeprefix("mt:")
+                .removeprefix("bh")
+                .removeprefix(":")
+                or self._listener.user_dict.get("BUZZHEAVIER_FOLDER_ID", "").strip()
+            )
+        self._listener.up_dest = self._listener.up_dest.removeprefix("bh").removeprefix(
+            ":"
+        )
 
     @property
     def processed_bytes(self):
@@ -43,120 +63,188 @@ class BuzzHeavierUploader:
         except:
             return 0
 
-    async def _stream_file(self, file_path):
+    def _get_chunk_size(self, file_size: int) -> int:
+        if file_size < 10 * 1024 * 1024:
+            return 512 * 1024
+        elif file_size < 100 * 1024 * 1024:
+            return 2 * 1024 * 1024
+        elif file_size < 1024 * 1024 * 1024:
+            return 4 * 1024 * 1024
+        else:
+            return 8 * 1024 * 1024
+
+    async def _stream_file(self, file_path, chunk_size):
+
         async with aiopen(file_path, "rb") as fh:
             while True:
                 if self._listener.is_cancelled:
                     raise CancelledError()
-                chunk = await fh.read(_UPLOAD_CHUNK)
+
+                chunk = await fh.read(chunk_size)
                 if not chunk:
                     return
+
                 self._processed_bytes += len(chunk)
                 yield chunk
 
-    async def _upload_one(self, client, file_path):
+    async def _get_root_id(self):
+        if self._root_id_cache:
+            return self._root_id_cache
+
+        resp = await self._client.get(
+            "https://buzzheavier.com/api/fs",
+        )
+
+        if resp.status_code != 200:
+            raise RuntimeError(f"Root fetch failed: {resp.text[:200]}")
+
+        data = resp.json()
+        root_id = (data.get("data") or {}).get("id")
+
+        if not root_id:
+            raise RuntimeError("Root id not found")
+
+        self._root_id_cache = root_id
+        return root_id
+
+    async def _create_directory(self, name, parent_id):
+        if not parent_id:
+            parent_id = await self._get_root_id()
+
+        resp = await self._client.post(
+            f"https://buzzheavier.com/api/fs/{parent_id}",
+            json={"name": name},
+        )
+
+        if resp.status_code not in (200, 201):
+            if resp.status_code == 409:
+                res = await self._client.get(
+                    f"https://buzzheavier.com/api/fs/{parent_id}"
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    for item in (data.get("data") or {}).get("children", []):
+                        if item.get("name") == name and item.get("isDirectory"):
+                            return item.get("id")
+            raise RuntimeError(f"Create dir failed: {resp.text}")
+
+        data = resp.json()
+        return (data.get("data") or {}).get("id")
+
+    async def _upload_file(self, file_path, parent_id):
         file_name = ospath.basename(file_path)
         file_size = await aiopath.getsize(file_path)
-        url = f"{_UPLOAD_BASE}/{file_name}"
+        chunk_size = self._get_chunk_size(file_size)
+        if not parent_id:
+            parent_id = await self._get_root_id()
+
+        url = f"{_UPLOAD_BASE}/{parent_id}/{file_name}"
+
         headers = {
             "Content-Type": "application/octet-stream",
             "Content-Length": str(file_size),
-            **_auth_headers(),
         }
 
-        LOGGER.info(f"Uploading to BuzzHeavier: {file_path}")
-        response = await client.put(
+        LOGGER.info(f"Uploading file: {file_path}")
+
+        resp = await self._client.put(
             url,
-            content=self._stream_file(file_path),
+            content=self._stream_file(file_path, chunk_size),
             headers=headers,
         )
-        if response.status_code not in (200, 201):
-            raise RuntimeError(
-                f"BuzzHeavier upload failed [{response.status_code}]: "
-                f"{response.text[:200]}"
-            )
 
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise RuntimeError(
-                f"BuzzHeavier returned non-JSON response: {response.text[:200]}"
-            ) from exc
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(f"Upload failed: {resp.text[:200]}")
 
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, dict):
-            raise RuntimeError("BuzzHeavier response missing 'data' object")
-        if file_id := (data.get("id") or "").strip():
-            return f"https://buzzheavier.com/{file_id}"
-        else:
-            raise RuntimeError("BuzzHeavier response missing file id")
+        payload = resp.json()
+        file_id = (payload.get("data") or {}).get("id")
 
-    async def upload(self):
-        files = []
-        corrupted = 0
-        error = ""
-        files_dict = {}
-        first_link = ""
-        if await aiopath.isfile(self._path):
-            files.append(self._path)
-        else:
-            walk_data = await sync_to_async(lambda: list(walk(self._path)))
-            for root, _, names in walk_data:
-                for name in sorted(names):
-                    candidate = ospath.join(root, name)
-                    if await aiopath.isfile(candidate):
-                        files.append(candidate)
-        if not files:
-            await self._listener.on_upload_error(
-                "BuzzHeavier: no files were found to upload"
-            )
-            return
-        total_files = len(files)
-        try:
-            async with AsyncClient(
-                timeout=_HTTP_TIMEOUT,
-                limits=Limits(max_connections=4, max_keepalive_connections=2),
-            ) as client:
-                for file_path in files:
+        if not file_id:
+            raise RuntimeError("Missing file id")
+
+        self._files += 1
+
+        return f"https://buzzheavier.com/{file_id}"
+
+    async def _upload_dir(self, directory, parent_id):
+        # Map each local directory to its own remote folder ID.
+        # Reusing/mutating one parent_id for every os.walk row would put
+        # sibling directories inside the last visited directory.
+        entries = await sync_to_async(lambda: list(walk(directory)))
+        directory = ospath.normpath(directory)
+        remote_dirs = {directory: parent_id}
+        for root, _, files in entries:
+            if self._listener.is_cancelled:
+                return
+
+            root = ospath.normpath(root)
+            if root not in remote_dirs:
+                parent_path = ospath.dirname(root)
+                parent_folder = remote_dirs[parent_path]
+                folder_id = await self._create_directory(
+                    ospath.basename(root), parent_folder
+                )
+                if not folder_id:
+                    raise RuntimeError(f"Unable to create Buzzheavier folder: {root}")
+                remote_dirs[root] = folder_id
+                self._folders += 1
+
+            for filename in sorted(files):
+                if self._listener.is_cancelled:
+                    return
+                file_path = ospath.join(root, filename)
+                if await aiopath.isfile(file_path):
                     try:
-                        link = await self._upload_one(client, file_path)
-                    except (HTTPError, RuntimeError) as exc:
-                        LOGGER.error(
-                            f"BuzzHeavier Upload Error: {exc} - File Path: {file_path}"
-                        )
-                        error = str(exc)
-                        corrupted += 1
-                        continue
+                        await self._upload_file(file_path, remote_dirs[root])
                     except CancelledError:
                         return
-                    if self._listener.is_cancelled:
-                        return
-                    if not first_link:
-                        first_link = link
-                    if self._listener.files_links:
-                        files_dict[link] = ospath.basename(file_path)
-        except Exception as exc:
-            LOGGER.error(f"BuzzHeavier session error: {exc}")
-            await self._listener.on_upload_error(f"BuzzHeavier: {exc}")
-            return
+                    except Exception as exc:
+                        LOGGER.error(f"Buzzheavier upload failed for {file_path}: {exc}")
+                        continue
 
-        if total_files <= corrupted:
-            await self._listener.on_upload_error(
-                f"Files Corrupted or unable to upload. {error or 'Check logs!'}"
+    async def upload(self):
+        try:
+            self._client = AsyncClient(
+                timeout=_HTTP_TIMEOUT,
+                limits=Limits(max_connections=4, max_keepalive_connections=0),
+                headers={"Authorization": f"Bearer {self._account_id}"},
             )
-            return
+            if await aiopath.isfile(self._path):
+                mime_type = await sync_to_async(get_mime_type, self._path)
+                link = await self._upload_file(self._path, self._listener.up_dest)
 
-        if self._listener.is_cancelled:
+            else:
+                mime_type = "Folder"
+                root_name = ospath.basename(ospath.abspath(self._path))
+
+                root_id = await self._create_directory(
+                    root_name, self._listener.up_dest
+                )
+
+                await self._upload_dir(self._path, root_id)
+
+                link = f"https://buzzheavier.com/{root_id}"
+
+            if self._listener.is_cancelled:
+                return
+
+            await self._listener.on_upload_complete(
+                link,
+                self._files,
+                self._folders,
+                mime_type,
+            )
+        except CancelledError:
             return
-        LOGGER.info(
-            f"Uploaded To BuzzHeavier: {self._listener.name} - {total_files - corrupted} files"
-        )
-        await self._listener.on_upload_complete(
-            first_link,
-            files_dict,
-            total_files,
-            "BuzzHeavier",
-        )
+        except (Exception, HTTPError) as e:
+            LOGGER.error(str(e))
+            traceback.print_exc()
+            await self._listener.on_upload_error(str(e))
+
+        finally:
+            if self._client:
+                await self._client.aclose()
+                self._client = None
 
     async def cancel_task(self):
         self._listener.is_cancelled = True

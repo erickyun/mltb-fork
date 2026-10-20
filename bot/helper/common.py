@@ -281,7 +281,28 @@ class TaskConfig:
         )
         DIRECT_UPLOADS = {"cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf"}
         
-        if default_upload == "bh" or self.up_dest == "bh":
+        if (
+            self.up_dest == "bh"
+            or self.up_dest.startswith(("bh:", "mt:bh:"))
+            or (default_upload == "bh" and not self.up_dest)
+        ):
+            if not self.up_dest or self.up_dest == "bh":
+                folder_id = (
+                    self.user_dict.get("BUZZHEAVIER_FOLDER_ID")
+                    or Config.BUZZHEAVIER_FOLDER_ID
+                )
+                self.up_dest = f"bh:{folder_id}" if folder_id else "bh"
+            if self.user_dict.get("USER_TOKENS", False) and not self.up_dest.startswith("mt:"):
+                self.up_dest = f"mt:{self.up_dest}"
+            if self.up_dest.startswith("mt:"):
+                if not self.user_dict.get("BUZZHEAVIER_ACCOUNT_ID"):
+                    raise ValueError(
+                        "BUZZHEAVIER_ACCOUNT_ID must be set in your user settings."
+                    )
+            elif not Config.BUZZHEAVIER_ACCOUNT_ID:
+                raise ValueError(
+                    "BUZZHEAVIER_ACCOUNT_ID must be set in config for Buzzheavier uploads."
+                )
             self.is_buzzheavier = True
         elif default_upload == "gf" or self.up_dest == "gf":
             self.is_gofile = True

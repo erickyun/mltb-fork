@@ -46,6 +46,7 @@ leech_options = [
 ]
 rclone_options = ["RCLONE_CONFIG", "RCLONE_PATH", "RCLONE_FLAGS"]
 gdrive_options = ["TOKEN_PICKLE", "GDRIVE_ID", "INDEX_URL"]
+uploaders_options = ["BUZZHEAVIER_ACCOUNT_ID", "BUZZHEAVIER_FOLDER_ID"]
 
 
 async def get_user_settings(from_user, stype="main"):
@@ -253,10 +254,33 @@ Gdrive Token <b>{tokenmsg}</b>
 Gdrive ID is <code>{gdrive_id}</code>
 Index URL is <code>{index}</code>
 Stop Duplicate is <b>{sd_msg}</b>"""
+    elif stype == "uploaders":
+        buttons.data_button(
+            "Buzzheavier Account ID",
+            f"userset {user_id} menu BUZZHEAVIER_ACCOUNT_ID",
+        )
+        buttons.data_button(
+            "Buzzheavier Folder ID",
+            f"userset {user_id} menu BUZZHEAVIER_FOLDER_ID",
+        )
+        buttons.data_button("Back", f"userset {user_id} back")
+        buttons.data_button("Close", f"userset {user_id} close")
+        has_account = bool(user_dict.get("BUZZHEAVIER_ACCOUNT_ID"))
+        current_folder = (
+            user_dict.get("BUZZHEAVIER_FOLDER_ID")
+            or Config.BUZZHEAVIER_FOLDER_ID
+            or "Root"
+        )
+        text = (
+            f"<u>Buzzheavier Settings for {name}</u>\\n"
+            f"Account ID: <b>{'Set' if has_account else 'Not Set'}</b>\\n"
+            f"Folder ID: <code>{escape(current_folder)}</code>"
+        )
     else:
         buttons.data_button("Leech", f"userset {user_id} leech")
         buttons.data_button("Rclone", f"userset {user_id} rclone")
         buttons.data_button("Gdrive API", f"userset {user_id} gdrive")
+        buttons.data_button("Buzzheavier", f"userset {user_id} uploaders")
 
         upload_paths = user_dict.get("UPLOAD_PATHS", {})
         if not upload_paths and "UPLOAD_PATHS" not in user_dict and Config.UPLOAD_PATHS:
@@ -530,6 +554,8 @@ async def get_menu(option, message, user_id):
         back_to = "rclone"
     elif option in gdrive_options:
         back_to = "gdrive"
+    elif option in uploaders_options:
+        back_to = "uploaders"
     else:
         back_to = "back"
     buttons.data_button("Back", f"userset {user_id} {back_to}")
@@ -651,7 +677,7 @@ async def edit_user_settings(client, query):
         await query.answer("Not Yours!", show_alert=True)
     elif data[2] == "setevent":
         await query.answer()
-    elif data[2] in ["leech", "gdrive", "rclone"]:
+    elif data[2] in ["leech", "gdrive", "rclone", "uploaders"]:
         await query.answer()
         await update_user_settings(query, data[2])
     elif data[2] == "menu":

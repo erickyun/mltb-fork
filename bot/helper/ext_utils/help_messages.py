@@ -96,12 +96,13 @@ Note: Only mb and gb are supported or write in bytes without unit!"""
 
 upload = """<b>Upload Destination</b>: -up
 
-/cmd link -up rc/gd/rcl/gdl/bh/gf/cb/lb/pd/vf/imgur/ic/ibb/kf (rcl: to select rclone config, remote & path | gdl: To select token.pickle, gdrive id | gf: upload to GoFile) using buttons
+/cmd link -up rc/gd/rcl/gdl/bh/gf/cb/lb/pd/vf/imgur/ic/ibb/kf (rcl: to select rclone config, remote & path | gdl: To select token.pickle, gdrive id | bh: upload to Buzzheavier | gf: upload to GoFile) using buttons
 You can directly add the upload path: -up remote:dir/subdir or -up Gdrive_id or -up id/username (telegram) or -up id/username|topic_id (telegram)
 If DEFAULT_UPLOAD is `rc` then you can pass up: `gd` to upload using gdrive tools to GDRIVE_ID.
 If DEFAULT_UPLOAD is `gd` then you can pass up: `rc` to upload to RCLONE_PATH.
 If DEFAULT_UPLOAD is `bh` or `gf` then you can pass up: `rc` to upload to RCLONE_PATH.
 If DEFAULT_UPLOAD is `gd` then you can pass up: `bh` to upload to BUZZHEAVIER or `gf` to upload to GoFile.
+Buzzheavier: -up bh uses the configured folder (or root). -up bh:FOLDER_ID uploads into that folder. Folder uploads create one shared folder link and keep nested directories. Requires BUZZHEAVIER_ACCOUNT_ID.
 GoFile uses GOFILE_API_KEY when configured; otherwise guest upload is used.
 cb: Catbox / lb: Litterbox temporary upload / pd: PixelDrain / vf: VikingFile / imgur: Imgur image upload / ic: ImgChest image upload / ibb: ImgBB image upload / kf: KrakenFiles
 
@@ -442,6 +443,8 @@ user_settings_text = {
     "THUMBNAIL_LAYOUT": "Send thumbnail layout (widthxheight, 2x2, 3x3, 2x4, 4x4, ...). Example: 3x3. Timeout: 60 sec",
     "RCLONE_PATH": "Send Rclone Path. If you want to use your rclone config edit using owner/user config from usetting or add mrcc: before rclone path. Example mrcc:remote:folder. Timeout: 60 sec",
     "RCLONE_FLAGS": "key:value|key|key|key:value . Check here all <a href='https://rclone.org/flags/'>RcloneFlags</a>\nEx: --buffer-size:8M|--drive-starred-only",
+    "BUZZHEAVIER_ACCOUNT_ID": "Send your personal Buzzheavier account ID. Keep it private. Timeout: 60 sec",
+    "BUZZHEAVIER_FOLDER_ID": "Send the destination Buzzheavier folder ID (not the full URL). Timeout: 60 sec",
     "GDRIVE_ID": "Send Gdrive ID. If you want to use your token.pickle edit using owner/user token from usetting or add mtp: before the id. Example: mtp:F435RGGRDXXXXXX . Timeout: 60 sec",
     "INDEX_URL": "Send Index URL. Timeout: 60 sec",
     "UPLOAD_PATHS": "Send Dict of keys that have path values. Example: {'path 1': 'remote:rclonefolder', 'path 2': 'gdrive1 id', 'path 3': 'tg chat id', 'path 4': 'mrcc:remote:', 'path 5': b:@username} . Timeout: 60 sec",
