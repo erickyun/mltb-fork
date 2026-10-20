@@ -35,9 +35,9 @@ class BuzzHeavierUploader:
     def user_settings(self):
         self._listener.up_dest = self._listener.up_dest or ""
         if self._listener.up_dest.startswith("mt:"):
-            self._account_id = self._listener.user_dict.get(
-                "BUZZHEAVIER_ACCOUNT_ID", ""
-            ).strip()
+            self._account_id = (self._listener.user_dict.get(
+                "BUZZHEAVIER_ACCOUNT_ID"
+            ) or "").strip()
             if not self._account_id:
                 raise ValueError(
                     "BUZZHEAVIER_ACCOUNT_ID is required to be filled in user settings to upload to your own account!"
@@ -46,7 +46,7 @@ class BuzzHeavierUploader:
                 self._listener.up_dest.removeprefix("mt:")
                 .removeprefix("bh")
                 .removeprefix(":")
-                or self._listener.user_dict.get("BUZZHEAVIER_FOLDER_ID", "").strip()
+                or (self._listener.user_dict.get("BUZZHEAVIER_FOLDER_ID") or "").strip()
             )
         self._listener.up_dest = self._listener.up_dest.removeprefix("bh").removeprefix(
             ":"
