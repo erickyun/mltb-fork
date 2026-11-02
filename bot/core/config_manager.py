@@ -18,6 +18,8 @@ class Config:
     CATBOX_USER_HASH = ""
     LITTERBOX_TIME = "1h"
     PIXELDRAIN_API_KEY = ""
+    PIXELDRAIN_PROXY = ""
+    PIXELDRAIN_API_URL = ""
     VIKINGFILE_USER_HASH = ""
     IMGUR_CLIENT_ID = ""
     IMGCHEST_API_KEY = ""

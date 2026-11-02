@@ -1,4 +1,4 @@
-from asyncio import CancelledError
+from asyncio import CancelledError, sleep as asyncio_sleep
 from base64 import b64encode
 from html import escape
 from logging import getLogger
@@ -275,57 +275,106 @@ class HostUploader:
             raise RuntimeError(f"PixelDrain response missing id: {payload}")
         return file_id
 
+    @staticmethod
+    def _pixeldrain_base():
+        base = str(Config.PIXELDRAIN_API_URL or "").strip().rstrip("/")
+        return base or "https://pixeldrain.com"
+
+    def _pixeldrain_client(self, client):
+        """Return (client, owned). Uses a dedicated client when a proxy is set."""
+        proxy = str(Config.PIXELDRAIN_PROXY or "").strip()
+        if not proxy:
+            return client, False
+        return (
+            AsyncClient(
+                timeout=_HTTP_TIMEOUT,
+                proxy=proxy,
+                follow_redirects=False,
+                limits=Limits(max_connections=2, max_keepalive_connections=1),
+            ),
+            True,
+        )
+
+    async def _pixeldrain_check(self, client, auth):
+        """Small request to tell 'server cannot reach pixeldrain' apart from upload bugs."""
+        try:
+            response = await client.get(
+                f"{self._pixeldrain_base()}/api/user",
+                headers={"Authorization": auth},
+                timeout=Timeout(30.0),
+            )
+        except HTTPError as exc:
+            raise RuntimeError(
+                f"Cannot reach {self._pixeldrain_base()} from this server "
+                f"({type(exc).__name__}: {exc or 'connection closed'}). "
+                "The server's network/ISP is probably blocking PixelDrain. "
+                "Set PIXELDRAIN_PROXY (e.g. http://user:pass@host:port or "
+                "socks5://host:port) or run the bot on another server."
+            ) from exc
+        if response.status_code in {401, 403}:
+            raise RuntimeError(
+                f"PixelDrain auth failed [{response.status_code}] — check "
+                f"PIXELDRAIN_API_KEY: {response.text[:300]}"
+            )
+
     async def _upload_pixeldrain(self, client, file_path):
         auth = self._pixeldrain_auth()
+        base = self._pixeldrain_base()
         base_name = ospath.basename(file_path)
         file_size = await aiopath.getsize(file_path)
+        pd_client, owned = self._pixeldrain_client(client)
+        errors = []
         file_id = None
-        put_error = None
-
-        # 1) Preferred: PUT /api/file/{name} with raw body.
         try:
-            response = await client.put(
-                f"https://pixeldrain.com/api/file/{quote(base_name, safe='')}",
-                content=RawFileStream(self, file_path),
-                headers={
-                    "Authorization": auth,
-                    "Content-Type": "application/octet-stream",
-                    "Content-Length": str(file_size),
-                },
-            )
-            file_id = self._pixeldrain_parse(response, "PUT")
-        except CancelledError:
-            raise
-        except (HTTPError, RuntimeError) as exc:
-            if "auth failed" in str(exc):
-                raise
-            put_error = f"{type(exc).__name__}: {exc}"
-            LOGGER.warning(f"PixelDrain PUT failed, retrying with POST: {put_error}")
+            await self._pixeldrain_check(pd_client, auth)
+            for attempt in range(1, 4):
+                method = "PUT" if attempt < 3 else "POST"
+                self._processed_bytes = 0
+                try:
+                    if method == "PUT":
+                        response = await pd_client.put(
+                            f"{base}/api/file/{quote(base_name, safe='')}",
+                            content=RawFileStream(self, file_path),
+                            headers={
+                                "Authorization": auth,
+                                "Content-Type": "application/octet-stream",
+                                "Content-Length": str(file_size),
+                            },
+                        )
+                    else:
+                        stream = MultipartFileStream(
+                            self, file_path, file_size, {"name": base_name}, "file"
+                        )
+                        response = await pd_client.post(
+                            f"{base}/api/file",
+                            content=stream,
+                            headers={
+                                "Authorization": auth,
+                                "Content-Type": (
+                                    f"multipart/form-data; boundary={stream.boundary}"
+                                ),
+                                "Content-Length": str(stream.content_length),
+                            },
+                        )
+                    file_id = self._pixeldrain_parse(response, method)
+                    break
+                except CancelledError:
+                    raise
+                except (HTTPError, RuntimeError) as exc:
+                    if "auth failed" in str(exc):
+                        raise
+                    msg = str(exc).strip() or "connection closed by remote"
+                    errors.append(f"{method}#{attempt} {type(exc).__name__}: {msg}")
+                    LOGGER.warning(f"PixelDrain upload attempt failed: {errors[-1]}")
+                    if self._listener.is_cancelled:
+                        raise CancelledError()
+                    await asyncio_sleep(3 * attempt)
+        finally:
+            if owned:
+                await pd_client.aclose()
 
-        # 2) Fallback: POST /api/file multipart.
         if not file_id:
-            self._processed_bytes = 0
-            try:
-                stream = MultipartFileStream(
-                    self, file_path, file_size, {"name": base_name}, "file"
-                )
-                response = await client.post(
-                    "https://pixeldrain.com/api/file",
-                    content=stream,
-                    headers={
-                        "Authorization": auth,
-                        "Content-Type": f"multipart/form-data; boundary={stream.boundary}",
-                        "Content-Length": str(stream.content_length),
-                    },
-                )
-                file_id = self._pixeldrain_parse(response, "POST")
-            except CancelledError:
-                raise
-            except (HTTPError, RuntimeError) as exc:
-                raise RuntimeError(
-                    f"PUT -> {put_error} | POST -> {type(exc).__name__}: {exc}"
-                ) from exc
-
+            raise RuntimeError(" | ".join(errors))
         link = f"https://pixeldrain.com/u/{file_id}"
         self._upload_meta[link] = {"id": file_id}
         return link
@@ -338,15 +387,20 @@ class HostUploader:
         ]
         if not file_ids:
             return None
-        response = await client.post(
-            "https://pixeldrain.com/api/list",
-            headers={"Authorization": self._pixeldrain_auth()},
-            json={
-                "title": self._root_name,
-                "anonymous": False,
-                "files": [{"id": file_id} for file_id in file_ids],
-            },
-        )
+        pd_client, owned = self._pixeldrain_client(client)
+        try:
+            response = await pd_client.post(
+                f"{self._pixeldrain_base()}/api/list",
+                headers={"Authorization": self._pixeldrain_auth()},
+                json={
+                    "title": self._root_name,
+                    "anonymous": False,
+                    "files": [{"id": file_id} for file_id in file_ids],
+                },
+            )
+        finally:
+            if owned:
+                await pd_client.aclose()
         if response.status_code >= 400:
             raise RuntimeError(
                 f"PixelDrain list creation failed [{response.status_code}]: "
