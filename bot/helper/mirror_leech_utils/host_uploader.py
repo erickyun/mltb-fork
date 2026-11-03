@@ -1,5 +1,6 @@
 from asyncio import CancelledError, sleep as asyncio_sleep
 from base64 import b64encode
+from hashlib import sha256
 from html import escape
 from logging import getLogger
 from mimetypes import guess_type
@@ -383,6 +384,241 @@ class HostUploader:
             raise RuntimeError(f"PixelDrain list response missing id: {payload}")
         return f"https://pixeldrain.com/l/{list_id}"
 
+    # ------------------------------------------------------------------ 0807.st
+    _ST0807_BASE = "https://0807.st"
+    _ST0807_CHUNK_THRESHOLD = 10 * 1024 * 1024
+    _ST0807_MAX_CHUNK = 16 * 1024 * 1024
+
+    def _st0807_headers(self, extra=None):
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; MLTB/1.0)",
+        }
+        token = str(Config.UPLOAD_0807_TOKEN or "").strip().strip("'\"")
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if extra:
+            headers.update(extra)
+        return headers
+
+    @staticmethod
+    def _st0807_has_token():
+        return bool(str(Config.UPLOAD_0807_TOKEN or "").strip())
+
+    @staticmethod
+    def _st0807_expiry():
+        expiry = str(Config.UPLOAD_0807_EXPIRY or "0").strip().lower().rstrip("h")
+        return expiry if expiry in {"0", "1", "24", "168", "720"} else "0"
+
+    @staticmethod
+    def _st0807_json(response, what):
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if response.status_code == 401:
+            raise RuntimeError(
+                f"0807 auth failed [401] — check UPLOAD_0807_TOKEN: "
+                f"{payload.get('error') or response.text[:300]}"
+            )
+        if response.status_code >= 400:
+            detail = payload.get("error") if isinstance(payload, dict) else None
+            raise RuntimeError(
+                f"0807 {what} failed [{response.status_code}]: "
+                f"{detail or response.text[:500]}"
+            )
+        if not isinstance(payload, dict):
+            raise RuntimeError(
+                f"0807 {what} returned non-JSON response: {response.text[:500]}"
+            )
+        return payload
+
+    @staticmethod
+    def _st0807_solve(challenge_id, bits):
+        bits = int(bits)
+        full, rem = divmod(bits, 8)
+        mask = (0xFF << (8 - rem)) & 0xFF if rem else 0
+        nonce = 0
+        while True:
+            digest = sha256(f"{challenge_id}.{nonce}".encode()).digest()
+            if digest[:full] == b"\x00" * full and (not rem or not digest[full] & mask):
+                return str(nonce)
+            nonce += 1
+
+    async def _st0807_pow(self, client):
+        if self._st0807_has_token():
+            return {}
+        response = await client.get(
+            f"{self._ST0807_BASE}/pow",
+            headers=self._st0807_headers({"Cache-Control": "no-store"}),
+        )
+        challenge = self._st0807_json(response, "proof-of-work")
+        if not challenge.get("id") or challenge.get("bits") is None:
+            raise RuntimeError(f"0807 bad proof-of-work challenge: {challenge}")
+        nonce = await sync_to_async(
+            self._st0807_solve, challenge["id"], challenge["bits"]
+        )
+        return {
+            "pow_id": challenge["id"],
+            "pow_ts": challenge.get("ts"),
+            "pow_bits": challenge["bits"],
+            "pow_sig": challenge.get("sig"),
+            "pow_nonce": nonce,
+        }
+
+    async def _st0807_retry_after(self, response, attempt):
+        try:
+            wait = float(response.headers.get("Retry-After") or 0)
+        except ValueError:
+            wait = 0
+        wait = min(max(wait, 5 * attempt), 300)
+        LOGGER.warning(f"0807 rate limited, waiting {wait:.0f}s")
+        await asyncio_sleep(wait)
+
+    async def _st0807_simple(self, client, file_path, expiry):
+        for attempt in range(1, 4):
+            fields = {"expiry": expiry}
+            fields.update(await self._st0807_pow(client))
+            self._processed_bytes = 0
+            file_size = await aiopath.getsize(file_path)
+            stream = MultipartFileStream(self, file_path, file_size, fields, "file")
+            response = await client.post(
+                f"{self._ST0807_BASE}/upload",
+                content=stream,
+                headers=self._st0807_headers(
+                    {
+                        "Content-Type": f"multipart/form-data; boundary={stream.boundary}",
+                        "Content-Length": str(stream.content_length),
+                    }
+                ),
+            )
+            if response.status_code == 429 and attempt < 3:
+                await self._st0807_retry_after(response, attempt)
+                continue
+            return self._st0807_json(response, "upload")
+        raise RuntimeError("0807 upload failed: rate limited")
+
+    async def _st0807_chunked(self, client, file_path, file_size, expiry):
+        name = ospath.basename(file_path)
+        mime = guess_type(file_path)[0] or "application/octet-stream"
+
+        init = None
+        for attempt in range(1, 4):
+            body = {"name": name, "size": file_size, "mime": mime, "maxdl": "0"}
+            body.update(await self._st0807_pow(client))
+            response = await client.post(
+                f"{self._ST0807_BASE}/upload/init",
+                json=body,
+                headers=self._st0807_headers(),
+            )
+            if response.status_code == 429 and attempt < 3:
+                await self._st0807_retry_after(response, attempt)
+                continue
+            init = self._st0807_json(response, "upload init")
+            break
+        upload_id = (init or {}).get("uploadId")
+        if not upload_id:
+            raise RuntimeError(f"0807 init response missing uploadId: {init}")
+        chunk_size = min(
+            int(init.get("chunkSize") or self._ST0807_MAX_CHUNK),
+            self._ST0807_MAX_CHUNK,
+        )
+
+        self._processed_bytes = 0
+        async with aiopen(file_path, "rb") as fh:
+            offset = 0
+            while offset < file_size:
+                if self._listener.is_cancelled:
+                    raise CancelledError()
+                await fh.seek(offset)
+                chunk = await fh.read(chunk_size)
+                for attempt in range(1, 6):
+                    try:
+                        response = await client.post(
+                            f"{self._ST0807_BASE}/upload/chunk",
+                            params={"id": upload_id, "offset": offset},
+                            content=chunk,
+                            headers=self._st0807_headers(
+                                {"Content-Type": "application/octet-stream"}
+                            ),
+                        )
+                        if response.status_code < 500 and response.status_code != 429:
+                            self._st0807_json(response, f"chunk @{offset}")
+                            break
+                        reason = f"HTTP {response.status_code}"
+                    except HTTPError as exc:
+                        reason = f"{type(exc).__name__}: {exc}"
+                    if attempt == 5:
+                        raise RuntimeError(f"0807 chunk @{offset} failed: {reason}")
+                    LOGGER.warning(f"0807 chunk @{offset} retry {attempt}: {reason}")
+                    await asyncio_sleep(2 * attempt)
+                offset += len(chunk)
+                self._processed_bytes = offset
+
+        last_error = None
+        for attempt in range(1, 11):
+            try:
+                response = await client.post(
+                    f"{self._ST0807_BASE}/upload/finish",
+                    json={
+                        "id": upload_id,
+                        "expiry": expiry,
+                        "maxdl": "0",
+                        "password": "",
+                    },
+                    headers=self._st0807_headers(),
+                )
+                if response.status_code < 500:
+                    return self._st0807_json(response, "upload finish")
+                last_error = f"HTTP {response.status_code}"
+            except HTTPError as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+            await asyncio_sleep(min(attempt, 5))
+        raise RuntimeError(f"0807 finish failed: {last_error}")
+
+    async def _upload_0807(self, client, file_path):
+        file_size = await aiopath.getsize(file_path)
+        if file_size <= 0:
+            raise RuntimeError("0807 does not accept empty files")
+        limit = 50 if self._st0807_has_token() else 10
+        if file_size > limit * 1024**3:
+            raise RuntimeError(f"0807 limit is {limit} GB per file")
+        expiry = self._st0807_expiry()
+
+        if file_size <= self._ST0807_CHUNK_THRESHOLD:
+            payload = await self._st0807_simple(client, file_path, expiry)
+        else:
+            payload = await self._st0807_chunked(client, file_path, file_size, expiry)
+
+        link = payload.get("url")
+        if not link:
+            raise RuntimeError(f"0807 response missing url: {payload}")
+        if payload.get("deletion_url"):
+            LOGGER.info(f"0807 deletion url for {link}: {payload['deletion_url']}")
+        self._upload_meta[link] = {
+            "id": link.rstrip("/").split("/")[-1],
+            "deletion_url": payload.get("deletion_url"),
+        }
+        return link
+
+    async def _create_0807_album(self, client, links):
+        ids = [
+            self._upload_meta.get(link, {}).get("id")
+            for link in links
+            if self._upload_meta.get(link, {}).get("id")
+        ]
+        if len(ids) < 2:
+            return None
+        response = await client.post(
+            f"{self._ST0807_BASE}/album",
+            json={"ids": ids, "expiry": self._st0807_expiry(), "name": self._root_name},
+            headers=self._st0807_headers(),
+        )
+        payload = self._st0807_json(response, "album creation")
+        return payload.get("url")
+
     def _viking_remote_path(self, file_path):
         if not self._is_folder:
             return None
@@ -630,6 +866,8 @@ class HostUploader:
             return await self._upload_imgbb(client, file_path)
         if self._host == "kf":
             return await self._upload_krakenfiles(client, file_path)
+        if self._host == "0807":
+            return await self._upload_0807(client, file_path)
 
         raise RuntimeError(f"Unknown upload host: {self._host}")
 
@@ -659,6 +897,8 @@ class HostUploader:
             return await self._create_pixeldrain_list(client, links)
         if self._host == "imgur":
             return await self._create_imgur_album(client, links)
+        if self._host == "0807":
+            return await self._create_0807_album(client, links)
         return None
 
     async def _send_file_links(self, files_dict):

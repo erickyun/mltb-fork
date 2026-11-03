@@ -96,7 +96,7 @@ Note: Only mb and gb are supported or write in bytes without unit!"""
 
 upload = """<b>Upload Destination</b>: -up
 
-/cmd link -up rc/gd/rcl/gdl/bh/gf/cb/lb/pd/vf/imgur/ic/ibb/kf (rcl: to select rclone config, remote & path | gdl: To select token.pickle, gdrive id | bh: upload to Buzzheavier | gf: upload to GoFile) using buttons
+/cmd link -up rc/gd/rcl/gdl/bh/gf/cb/lb/pd/vf/imgur/ic/ibb/kf/0807 (rcl: to select rclone config, remote & path | gdl: To select token.pickle, gdrive id | bh: upload to Buzzheavier | gf: upload to GoFile) using buttons
 You can directly add the upload path: -up remote:dir/subdir or -up Gdrive_id or -up id/username (telegram) or -up id/username|topic_id (telegram)
 If DEFAULT_UPLOAD is `rc` then you can pass up: `gd` to upload using gdrive tools to GDRIVE_ID.
 If DEFAULT_UPLOAD is `gd` then you can pass up: `rc` to upload to RCLONE_PATH.
@@ -104,7 +104,7 @@ If DEFAULT_UPLOAD is `bh` or `gf` then you can pass up: `rc` to upload to RCLONE
 If DEFAULT_UPLOAD is `gd` then you can pass up: `bh` to upload to BUZZHEAVIER or `gf` to upload to GoFile.
 Buzzheavier: -up bh uses the configured folder (or root). -up bh:FOLDER_ID uploads into that folder. Folder uploads create one shared folder link and keep nested directories. Requires BUZZHEAVIER_ACCOUNT_ID.
 GoFile uses GOFILE_API_KEY when configured; otherwise guest upload is used.
-cb: Catbox / lb: Litterbox temporary upload / pd: PixelDrain / vf: VikingFile / imgur: Imgur image upload / ic: ImgChest image upload / ibb: ImgBB image upload / kf: KrakenFiles
+cb: Catbox / lb: Litterbox temporary upload / pd: PixelDrain / vf: VikingFile / imgur: Imgur image upload / ic: ImgChest image upload / ibb: ImgBB image upload / kf: KrakenFiles / 0807: 0807.st (UPLOAD_0807_TOKEN optional, UPLOAD_0807_EXPIRY: 0/1/24/168/720 hours)
 
 If you want to add path or gdrive manually from your config/token (UPLOADED FROM USETTING) add mrcc: for rclone and mtp: before the path/gdrive_id without space.
 /cmd link -up mrcc:main:dump or -up mtp:gdrive_id <strong>OR you can simply edit upload using owner/user|token/config from usetting without adding mtp: or mrcc: before the upload path/id</strong>
