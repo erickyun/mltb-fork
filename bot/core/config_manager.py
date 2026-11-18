@@ -25,6 +25,8 @@ class Config:
     KRAKENFILES_API_KEY = ""
     UPLOAD_0807_TOKEN = ""
     UPLOAD_0807_EXPIRY = "0"
+    DROPDRIVE_TOKEN = ""
+    DROPDRIVE_FOLDER_ID = ""
     URL_SHORTENER = "spoome"
     URL_SHORTENER_PROXY = ""
     TLY_API_TOKEN = ""
@@ -175,7 +177,7 @@ class Config:
         if isinstance(converted_value, str):
             converted_value = converted_value.strip()
 
-        if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf", "cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf", "0807"}:
+        if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf", "cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf", "0807", "dd", "dropdrive"}:
             return "rc"
 
         if attr == "URL_SHORTENER" and converted_value not in {

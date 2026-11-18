@@ -1,4 +1,4 @@
-from asyncio import CancelledError, sleep as asyncio_sleep
+from asyncio import CancelledError, create_task, sleep as asyncio_sleep
 from base64 import b64encode
 from hashlib import sha256
 from html import escape
@@ -96,6 +96,33 @@ class RawFileStream(AsyncByteStream):
                 if not chunk:
                     break
                 self._uploader._processed_bytes += len(chunk)
+                yield chunk
+
+
+
+class RangeFileStream(AsyncByteStream):
+    """Streams one byte range of a file and reports progress to the uploader."""
+
+    def __init__(self, uploader, file_path, start, length, on_progress=None):
+        self._uploader = uploader
+        self._file_path = file_path
+        self._start = start
+        self._length = length
+        self._on_progress = on_progress
+
+    async def __aiter__(self):
+        sent = 0
+        async with aiopen(self._file_path, "rb") as fh:
+            await fh.seek(self._start)
+            while sent < self._length:
+                if self._uploader._listener.is_cancelled:
+                    raise CancelledError()
+                chunk = await fh.read(min(_UPLOAD_CHUNK, self._length - sent))
+                if not chunk:
+                    raise RuntimeError("file ended before the upload part was sent")
+                sent += len(chunk)
+                if self._on_progress:
+                    self._on_progress(sent)
                 yield chunk
 
 
@@ -619,6 +646,337 @@ class HostUploader:
         payload = self._st0807_json(response, "album creation")
         return payload.get("url")
 
+    # --------------------------------------------------------------- DropDrive
+    _DD_BASE = "https://dropdrive.rip"
+    _DD_DEFAULT_PART = 100_000_000
+
+    @staticmethod
+    def _dd_token():
+        token = str(Config.DROPDRIVE_TOKEN or "").strip().strip("'\"")
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        return token
+
+    def _dd_headers(self, json_body=True):
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; MLTB/1.0)",
+        }
+        if json_body:
+            headers["Content-Type"] = "application/json"
+        if token := self._dd_token():
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+    @staticmethod
+    def _dd_json(response, what):
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if response.status_code == 401:
+            raise RuntimeError(
+                f"DropDrive auth failed [401] — check DROPDRIVE_TOKEN: "
+                f"{error or response.text[:300]}"
+            )
+        if response.status_code >= 400 or error or (
+            isinstance(payload, dict) and payload.get("success") is False
+        ):
+            raise RuntimeError(
+                f"DropDrive {what} failed [{response.status_code}]: "
+                f"{error or response.text[:500]}"
+            )
+        if not isinstance(payload, dict):
+            raise RuntimeError(
+                f"DropDrive {what} returned non-JSON response: {response.text[:500]}"
+            )
+        return payload
+
+    async def _dd_post(self, client, path, body, what, retries=1):
+        last = None
+        for attempt in range(retries):
+            try:
+                response = await client.post(
+                    f"{self._DD_BASE}{path}", json=body, headers=self._dd_headers()
+                )
+                if response.status_code in {408, 429} or response.status_code >= 500:
+                    last = f"HTTP {response.status_code}: {response.text[:200]}"
+                else:
+                    return self._dd_json(response, what)
+            except HTTPError as exc:
+                last = f"{type(exc).__name__}: {exc or 'connection error'}"
+            if attempt + 1 < retries:
+                await asyncio_sleep(min(2 ** attempt, 15))
+        raise RuntimeError(f"DropDrive {what} failed: {last}")
+
+    @staticmethod
+    def _dd_solve(challenge, difficulty):
+        difficulty = int(difficulty)
+        full, rem = divmod(difficulty, 8)
+        mask = (0xFF << (8 - rem)) & 0xFF if rem else 0
+        nonce = 0
+        while True:
+            nonce_hex = format(nonce, "x")
+            digest = sha256(f"{challenge}{nonce_hex}".encode()).digest()
+            if digest[:full] == b"\x00" * full and (not rem or not digest[full] & mask):
+                return nonce_hex
+            nonce += 1
+
+    async def _dd_pow(self, client):
+        response = await client.get(
+            f"{self._DD_BASE}/api/upload/pow-challenge",
+            headers=self._dd_headers(json_body=False),
+        )
+        payload = self._dd_json(response, "proof-of-work")
+        if payload.get("skipPow"):
+            return {}
+        challenge, difficulty = payload.get("challenge"), payload.get("difficulty")
+        if not challenge or difficulty is None:
+            raise RuntimeError(f"DropDrive bad proof-of-work challenge: {payload}")
+        nonce = await sync_to_async(self._dd_solve, challenge, difficulty)
+        return {"powChallenge": challenge, "powNonce": nonce}
+
+    async def _dd_part_size(self, client):
+        if getattr(self, "_dd_cached_part", None):
+            return self._dd_cached_part
+        part = self._DD_DEFAULT_PART
+        try:
+            response = await client.get(
+                f"{self._DD_BASE}/api/config",
+                headers=self._dd_headers(json_body=False),
+            )
+            config = self._dd_json(response, "config")
+            for key in ("chunkSize", "partSize", "storageChunkSize", "uploadChunkSize"):
+                if str(config.get(key) or "").isdigit() and int(config[key]) > 0:
+                    part = int(config[key])
+                    break
+            if config.get("maxFileSizeGB"):
+                self._dd_max_bytes = float(config["maxFileSizeGB"]) * 1024**3
+        except (HTTPError, RuntimeError) as exc:
+            LOGGER.warning(f"DropDrive config lookup failed, using defaults: {exc}")
+        self._dd_cached_part = part
+        return part
+
+    async def _dd_init(self, client, name, file_size, part_size, folder_id):
+        body = {
+            "fileName": name,
+            "fileSize": file_size,
+            "totalChunks": max(1, -(-file_size // part_size)),
+            "mimeType": guess_type(name)[0] or "application/octet-stream",
+        }
+        if folder_id:
+            body["folderId"] = folder_id
+        body.update(await self._dd_pow(client))
+        return await self._dd_post(client, "/api/upload/init", body, "upload init")
+
+    async def _dd_storage_upload(self, client, file_path, file_size, init):
+        server = str(init["storageServerUrl"]).rstrip("/")
+        session_id = init["sessionId"]
+        part_size = int(init.get("chunkSize") or self._DD_DEFAULT_PART)
+        parts = max(1, -(-file_size // part_size))
+        base = 0
+        for index in range(parts):
+            start = index * part_size
+            length = min(part_size, file_size - start)
+            last = index == parts - 1
+
+            def progress(sent, _start=start):
+                self._processed_bytes = base + _start + sent
+
+            response = await client.post(
+                f"{server}/files/{session_id}/{index}",
+                params={"last": "1"} if last else None,
+                content=RangeFileStream(self, file_path, start, length, progress),
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": str(length),
+                    "User-Agent": "Mozilla/5.0 (compatible; MLTB/1.0)",
+                },
+            )
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"DropDrive part {index + 1}/{parts} failed "
+                    f"[{response.status_code}]: {response.text[:300]}"
+                )
+
+    async def _dd_s3_upload(self, client, file_path, file_size, init):
+        bearer = {"sessionId": init["sessionId"], "uploadToken": init["uploadToken"]}
+        single = init.get("uploadMode") == "single" and init.get("uploadUrl")
+        part_size = file_size if single else int(init.get("partSize") or 0)
+        part_count = 1 if single else int(init.get("partCount") or 0)
+        if part_size < 1 or part_count < 1 or (
+            not single and part_count != -(-file_size // part_size)
+        ):
+            raise RuntimeError(f"DropDrive returned invalid S3 settings: {init}")
+
+        done_bytes = 0
+        active = {"on": True}
+
+        async def heartbeat():
+            while active["on"]:
+                await asyncio_sleep(30)
+                if not active["on"]:
+                    break
+                try:
+                    await client.post(
+                        f"{self._DD_BASE}/api/upload/s3-heartbeat",
+                        json=bearer,
+                        headers=self._dd_headers(),
+                        timeout=Timeout(15.0),
+                    )
+                except HTTPError:
+                    pass
+
+        hb = create_task(heartbeat())
+        parts = []
+        try:
+            for number in range(1, part_count + 1):
+                start = (number - 1) * part_size
+                length = min(part_size, file_size - start)
+                for attempt in range(4):
+                    if self._listener.is_cancelled:
+                        raise CancelledError()
+
+                    def progress(sent, _base=done_bytes):
+                        self._processed_bytes = _base + sent
+
+                    try:
+                        url = single or (
+                            await self._dd_post(
+                                client,
+                                "/api/upload/s3-part",
+                                {**bearer, "partNumber": number},
+                                f"S3 part {number} signing",
+                                retries=3,
+                            )
+                        ).get("url")
+                        if not url:
+                            raise RuntimeError("DropDrive did not return an S3 part URL")
+                        response = await client.put(
+                            url,
+                            content=RangeFileStream(self, file_path, start, length, progress),
+                            headers={"Content-Length": str(length)},
+                        )
+                        if response.status_code in {400, 401, 403, 404, 409, 413}:
+                            raise RuntimeError(
+                                f"S3 rejected part {number} [{response.status_code}]: "
+                                f"{response.text[:300]}"
+                            )
+                        if response.status_code >= 300:
+                            raise HTTPError(f"S3 part {number} HTTP {response.status_code}")
+                        etag = response.headers.get("ETag")
+                        if not etag:
+                            raise RuntimeError(f"S3 part {number} returned no ETag")
+                        parts.append({"PartNumber": number, "ETag": etag})
+                        break
+                    except HTTPError as exc:
+                        if attempt == 3:
+                            raise RuntimeError(
+                                f"DropDrive S3 part {number} failed: "
+                                f"{type(exc).__name__}: {exc}"
+                            ) from exc
+                        LOGGER.warning(f"DropDrive S3 part {number} retry {attempt + 1}: {exc}")
+                        await asyncio_sleep(min(8, 2 ** attempt))
+                done_bytes += length
+                self._processed_bytes = done_bytes
+        finally:
+            active["on"] = False
+            hb.cancel()
+
+        await self._dd_post(
+            client, "/api/upload/s3-complete", {**bearer, "parts": parts},
+            "S3 completion", retries=3,
+        )
+
+    async def _upload_dropdrive(self, client, file_path):
+        file_size = await aiopath.getsize(file_path)
+        if file_size <= 0:
+            raise RuntimeError("DropDrive does not accept empty files")
+        name = ospath.basename(file_path)
+        if not ospath.splitext(name)[1]:
+            name = f"{name}.bin"  # DropDrive requires a file extension
+        name = name[-255:]
+        folder_id = str(Config.DROPDRIVE_FOLDER_ID or "").strip() or None
+        if folder_id and not self._dd_token():
+            raise RuntimeError("DROPDRIVE_FOLDER_ID needs DROPDRIVE_TOKEN")
+
+        part_size = await self._dd_part_size(client)
+        max_bytes = getattr(self, "_dd_max_bytes", None)
+        if max_bytes and file_size > max_bytes:
+            raise RuntimeError(f"DropDrive limit is {max_bytes / 1024**3:.0f} GB per file")
+
+        errors = []
+        for attempt in range(1, 4):
+            if self._listener.is_cancelled:
+                raise CancelledError()
+            self._processed_bytes = 0
+            init = None
+            try:
+                init = await self._dd_init(client, name, file_size, part_size, folder_id)
+                if not init.get("sessionId"):
+                    raise RuntimeError(f"DropDrive init response missing sessionId: {init}")
+                if init.get("uploadBackend") == "s3":
+                    await self._dd_s3_upload(client, file_path, file_size, init)
+                elif init.get("storageServerUrl"):
+                    chunk = int(init.get("chunkSize") or part_size)
+                    if chunk != part_size and -(-file_size // chunk) != -(-file_size // part_size):
+                        # Server uses another part size; restart with the right count.
+                        self._dd_cached_part = part_size = chunk
+                        raise RuntimeError(f"part size changed to {chunk}, restarting")
+                    await self._dd_storage_upload(client, file_path, file_size, init)
+                else:
+                    raise RuntimeError(f"DropDrive init returned no upload target: {init}")
+
+                body = {"sessionId": init["sessionId"]}
+                if init.get("uploadBackend") == "s3":
+                    body["uploadToken"] = init["uploadToken"]
+                if folder_id:
+                    body["folderId"] = folder_id
+                done = await self._dd_post(
+                    client, "/api/upload/complete", body, "upload complete", retries=5
+                )
+                break
+            except CancelledError:
+                if init and init.get("uploadBackend") == "s3":
+                    await self._dd_s3_abort(client, init)
+                raise
+            except (HTTPError, RuntimeError) as exc:
+                if init and init.get("uploadBackend") == "s3":
+                    await self._dd_s3_abort(client, init)
+                msg = f"{type(exc).__name__}: {str(exc).strip() or 'connection error'}"
+                if "auth failed" in msg or "needs DROPDRIVE_TOKEN" in msg:
+                    raise
+                errors.append(f"try{attempt} {msg}")
+                LOGGER.warning(f"DropDrive upload attempt {attempt} failed: {msg}")
+                if attempt < 3:
+                    await asyncio_sleep(5 * attempt)
+        else:
+            raise RuntimeError(" | ".join(errors))
+
+        if short := done.get("shortCode"):
+            link = f"{self._DD_BASE}/d/{short}"
+        elif url := done.get("downloadUrl"):
+            link = url if url.startswith("http") else f"{self._DD_BASE}{url}"
+        elif done.get("fileId"):
+            link = f"{self._DD_BASE}/d/{done['fileId']}"
+        else:
+            raise RuntimeError(f"DropDrive complete response missing link: {done}")
+        self._processed_bytes = file_size
+        self._upload_meta[link] = {"id": done.get("fileId")}
+        return link
+
+    async def _dd_s3_abort(self, client, init):
+        try:
+            await client.post(
+                f"{self._DD_BASE}/api/upload/s3-abort",
+                json={"sessionId": init["sessionId"], "uploadToken": init.get("uploadToken")},
+                headers=self._dd_headers(),
+                timeout=Timeout(10.0),
+            )
+        except Exception:
+            pass
+
     def _viking_remote_path(self, file_path):
         if not self._is_folder:
             return None
@@ -868,6 +1226,8 @@ class HostUploader:
             return await self._upload_krakenfiles(client, file_path)
         if self._host == "0807":
             return await self._upload_0807(client, file_path)
+        if self._host in {"dd", "dropdrive"}:
+            return await self._upload_dropdrive(client, file_path)
 
         raise RuntimeError(f"Unknown upload host: {self._host}")
 
