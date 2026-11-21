@@ -977,6 +977,83 @@ class HostUploader:
         except Exception:
             pass
 
+    # --------------------------------------------------------------- FileDitch
+    _FD_UPLOAD_URL = "https://new.fileditch.com/upload.php"
+
+    async def _upload_fileditch(self, client, file_path):
+        file_size = await aiopath.getsize(file_path)
+        if file_size <= 0:
+            raise RuntimeError("FileDitch does not accept empty files")
+        name = ospath.basename(file_path)
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(file_size),
+            "User-Agent": "Mozilla/5.0 (compatible; MLTB/1.0)",
+        }
+        token = str(Config.FILEDITCH_TOKEN or "").strip().strip("'\"")
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        errors = []
+        for attempt in range(1, 4):
+            if self._listener.is_cancelled:
+                raise CancelledError()
+            self._processed_bytes = 0
+            wait = 5 * attempt
+            try:
+                response = await client.put(
+                    self._FD_UPLOAD_URL,
+                    params={"filename": name},
+                    content=RawFileStream(self, file_path),
+                    headers=headers,
+                )
+            except HTTPError as exc:
+                errors.append(
+                    f"try{attempt} {type(exc).__name__}: {str(exc).strip() or 'connection error'}"
+                )
+            else:
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                error = payload.get("error") or response.text[:300]
+                status = response.status_code
+                if status < 300 and payload.get("url"):
+                    link = payload["url"]
+                    self._upload_meta[link] = {"filename": payload.get("filename")}
+                    if payload.get("account"):
+                        LOGGER.info(f"FileDitch account listing: {payload['account']}")
+                    return link
+                if status == 403:
+                    raise RuntimeError(f"FileDitch blocked this file type: {error}")
+                if status == 413:
+                    raise RuntimeError(f"FileDitch file too large: {error}")
+                if status == 401:
+                    raise RuntimeError(
+                        f"FileDitch auth failed [401] — check FILEDITCH_TOKEN: {error}"
+                    )
+                if status < 300:
+                    raise RuntimeError(f"FileDitch response missing url: {payload or error}")
+                if status in {400, 405, 411}:
+                    raise RuntimeError(f"FileDitch upload failed [{status}]: {error}")
+                errors.append(f"try{attempt} HTTP {status}: {error}")
+                if status == 429:
+                    try:
+                        wait = max(wait, float(response.headers.get("Retry-After") or 0))
+                    except ValueError:
+                        pass
+                elif status == 507:
+                    wait = max(wait, 60)
+            LOGGER.warning(f"FileDitch upload attempt {attempt} failed: {errors[-1]}")
+            if attempt < 3:
+                await asyncio_sleep(min(wait, 300))
+        raise RuntimeError(" | ".join(errors))
+
     def _viking_remote_path(self, file_path):
         if not self._is_folder:
             return None
@@ -1228,6 +1305,8 @@ class HostUploader:
             return await self._upload_0807(client, file_path)
         if self._host in {"dd", "dropdrive"}:
             return await self._upload_dropdrive(client, file_path)
+        if self._host in {"fd", "fileditch"}:
+            return await self._upload_fileditch(client, file_path)
 
         raise RuntimeError(f"Unknown upload host: {self._host}")
 

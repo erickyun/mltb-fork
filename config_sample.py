@@ -29,6 +29,7 @@ UPLOAD_0807_TOKEN = ""  # optional 0807.st partner token
 UPLOAD_0807_EXPIRY = "0"  # hours: 0 (never), 1, 24, 168, 720
 DROPDRIVE_TOKEN = ""  # optional 16-character DropDrive account token
 DROPDRIVE_FOLDER_ID = ""  # optional folder UUID (needs DROPDRIVE_TOKEN)
+FILEDITCH_TOKEN = ""  # optional FileDitch login token (lists uploads in your account)
 EXCLUDED_EXTENSIONS = ""
 INCLUDED_EXTENSIONS = ""
 INCOMPLETE_TASK_NOTIFIER = False
