@@ -31,6 +31,9 @@ class SabnzbdClient(JobFunctions):
             disable_warnings(InsecureRequestWarning)
         super().__init__()
 
+    def set_api_key(self, api_key: str):
+        self._default_params["apikey"] = api_key
+
     def _session(self):
         if self._http_session is not None:
             return self._http_session

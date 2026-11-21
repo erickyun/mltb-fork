@@ -8,6 +8,7 @@ from fastapi.templating import Jinja2Templates
 from logging import getLogger, FileHandler, StreamHandler, INFO, basicConfig, WARNING
 from asyncio import sleep
 from sabnzbdapi import SabnzbdClient
+from sabnzbdapi.hardening import read_api_key
 from aioaria2 import Aria2HttpClient
 from aioqbt.client import create_client
 from aiohttp.client_exceptions import ClientError
@@ -21,8 +22,8 @@ getLogger("aiohttp").setLevel(WARNING)
 aria2 = None
 qbittorrent = None
 sabnzbd_client = SabnzbdClient(
-    host="http://localhost",
-    api_key="mltb",
+    host="http://127.0.0.1",
+    api_key=read_api_key(),
     port="8070",
 )
 

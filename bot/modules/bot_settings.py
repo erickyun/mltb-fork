@@ -7,6 +7,7 @@ from asyncio import (
     sleep,
     gather,
 )
+from ast import literal_eval
 from functools import partial
 from io import BytesIO
 from os import getcwd
@@ -36,6 +37,7 @@ from ..helper.ext_utils.bot_utils import (
     new_task,
 )
 from ..core.config_manager import Config
+from sabnzbdapi.hardening import PROTECTED_KEYS
 from ..core.telegram_manager import TgClient
 from ..core.torrent_manager import TorrentManager
 from ..core.startup import update_qb_options, update_nzb_options, update_variables
@@ -376,12 +378,17 @@ async def edit_qbit(_, message, pre_message, key):
 @new_task
 async def edit_nzb(_, message, pre_message, key):
     handler_dict[message.chat.id] = False
+    if key in PROTECTED_KEYS:
+        LOGGER.warning(f"Refused to change protected SABnzbd option: {key}")
+        await update_buttons(pre_message, "nzb")
+        await delete_message(message)
+        return
     value = str(message.text)
     if value.isdigit():
         value = int(value)
     elif value.startswith("[") and value.endswith("]"):
         try:
-            value = ",".join(eval(value))
+            value = ",".join(literal_eval(value))
         except Exception as e:
             LOGGER.error(e)
             await update_buttons(pre_message, "nzb")
@@ -657,6 +664,9 @@ async def edit_bot_settings(client, query):
         ]:
             await rclone_serve_booter()
     elif data[1] == "resetnzb":
+        if data[2] in PROTECTED_KEYS:
+            await query.answer("Protected SABnzbd security option", show_alert=True)
+            return
         await query.answer()
         res = await sabnzbd_client.set_config_default(data[2])
         nzb_options[data[2]] = res["config"]["misc"][data[2]]
@@ -689,6 +699,9 @@ async def edit_bot_settings(client, query):
         await update_buttons(message, "qbit")
         await database.update_qbittorrent(data[2], "")
     elif data[1] == "emptynzb":
+        if data[2] in PROTECTED_KEYS:
+            await query.answer("Protected SABnzbd security option", show_alert=True)
+            return
         await query.answer()
         res = await sabnzbd_client.set_config("misc", data[2], "")
         nzb_options[data[2]] = res["config"]["misc"][data[2]]

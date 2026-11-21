@@ -5,6 +5,8 @@ from asyncio import create_subprocess_exec, create_subprocess_shell, sleep
 from importlib import import_module
 from os import environ
 
+from sabnzbdapi.hardening import PROTECTED_KEYS, read_api_key
+
 from .. import (
     aria2_options,
     qbit_options,
@@ -58,7 +60,11 @@ async def update_nzb_options():
     while True:
         try:
             no = (await sabnzbd_client.get_config())["config"]["misc"]
-            nzb_options.update(no)
+            # Security settings are managed by sabnzbdapi.hardening only; keep
+            # them (and the keys/password) out of the Telegram settings menu.
+            nzb_options.update(
+                {k: v for k, v in no.items() if k not in PROTECTED_KEYS}
+            )
         except:
             await sleep(0.5)
             continue
@@ -261,6 +267,13 @@ async def load_configurations():
             "chmod 600 .netrc && cp .netrc /root/.netrc && chmod +x aria-nox-nzb.sh && ./aria-nox-nzb.sh"
         )
     ).wait()
+
+    # aria-nox-nzb.sh hardened SABnzbd.ini (server-generated keys): use the new
+    # API key and store the hardened ini in the database, so the old insecure
+    # copy is never restored again.
+    sabnzbd_client.set_api_key(read_api_key())
+    if await aiopath.exists("sabnzbd/SABnzbd.ini"):
+        await database.update_nzb_config()
 
     if Config.BASE_URL:
         await create_subprocess_shell(

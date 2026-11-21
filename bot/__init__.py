@@ -13,6 +13,7 @@ from logging import (
     ERROR,
 )
 from sabnzbdapi import SabnzbdClient
+from sabnzbdapi.hardening import read_api_key
 from time import time
 from os import cpu_count
 
@@ -71,9 +72,11 @@ jd_listener_lock = Lock()
 cpu_eater_lock = Lock()
 same_directory_lock = Lock()
 
+# The API key is generated on the server by sabnzbdapi.hardening (never stored
+# in git); it is re-read after SABnzbd starts (core/startup.py).
 sabnzbd_client = SabnzbdClient(
-    host="http://localhost",
-    api_key="mltb",
+    host="http://127.0.0.1",
+    api_key=read_api_key(),
     port="8070",
 )
 
