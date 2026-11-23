@@ -984,6 +984,10 @@ class HostUploader:
     # --------------------------------------------------------------- FileDitch
     _FD_UPLOAD_URL = "https://new.fileditch.com/upload.php"
     _FD_CHUNK_URL = "https://new.fileditch.com/chunked.php"
+    _FD_FULL_MSG = (
+        "FileDitch servers are out of space (HTTP 507) — this is on FileDitch's "
+        "side, try again later or use another host"
+    )
     _FD_PARALLEL = 3
     _FD_TRIES = 8
 
@@ -1015,7 +1019,7 @@ class HostUploader:
 
     @staticmethod
     def _fd_retryable(status):
-        return status == 0 or status == 429 or status >= 500
+        return status == 0 or status == 429 or (status >= 500 and status != 507)
 
     @staticmethod
     def _fd_backoff(attempt, status):
@@ -1046,6 +1050,8 @@ class HostUploader:
         status, init = await self._fd_api(
             client, {"action": "init", "filename": name, "size": file_size}, "init"
         )
+        if status == 507:
+            raise RuntimeError(self._FD_FULL_MSG)
         if status != 200 or not init.get("success"):
             raise _FdFallback(f"chunked init HTTP {status}: {init.get('error')}")
         up_id = init.get("id")
@@ -1096,6 +1102,9 @@ class HostUploader:
                     return
                 loaded[i] = 0
                 refresh()
+                if code == 507:
+                    state["failed"] = RuntimeError(self._FD_FULL_MSG)
+                    raise state["failed"]
                 if not self._fd_retryable(code) or attempt == self._FD_TRIES:
                     state["failed"] = RuntimeError(
                         f"FileDitch chunk {i + 1}/{total} failed [HTTP {code}]: {error}"
@@ -1223,7 +1232,7 @@ class HostUploader:
                     except ValueError:
                         pass
                 elif status == 507:
-                    wait = max(wait, 60)
+                    raise RuntimeError(self._FD_FULL_MSG)
             LOGGER.warning(f"FileDitch upload attempt {attempt} failed: {errors[-1]}")
             if attempt < 3:
                 await asyncio_sleep(min(wait, 300))
