@@ -1,4 +1,4 @@
-from asyncio import CancelledError, create_task, sleep as asyncio_sleep
+from asyncio import CancelledError, create_task, gather, sleep as asyncio_sleep
 from base64 import b64encode
 from hashlib import sha256
 from html import escape
@@ -124,6 +124,10 @@ class RangeFileStream(AsyncByteStream):
                 if self._on_progress:
                     self._on_progress(sent)
                 yield chunk
+
+
+class _FdFallback(RuntimeError):
+    """FileDitch chunked endpoint unusable; fall back to upload.php."""
 
 
 class HostUploader:
@@ -979,8 +983,179 @@ class HostUploader:
 
     # --------------------------------------------------------------- FileDitch
     _FD_UPLOAD_URL = "https://new.fileditch.com/upload.php"
+    _FD_CHUNK_URL = "https://new.fileditch.com/chunked.php"
+    _FD_PARALLEL = 3
+    _FD_TRIES = 8
+
+    @staticmethod
+    def _fd_token():
+        token = str(Config.FILEDITCH_TOKEN or "").strip().strip("'\"")
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        return token
+
+    def _fd_headers(self, extra=None):
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; MLTB/1.0)",
+        }
+        if token := self._fd_token():
+            headers["Authorization"] = f"Bearer {token}"
+        if extra:
+            headers.update(extra)
+        return headers
+
+    @staticmethod
+    def _fd_payload(response):
+        try:
+            payload = response.json()
+        except ValueError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _fd_retryable(status):
+        return status == 0 or status == 429 or status >= 500
+
+    @staticmethod
+    def _fd_backoff(attempt, status):
+        return min(30, (2 if status == 429 else 1) * 2 ** (attempt - 1))
+
+    async def _fd_api(self, client, params, what, tries=5):
+        """POST to chunked.php; returns (status, payload) after retrying 429/5xx."""
+        status, payload = 0, {}
+        for attempt in range(1, tries + 1):
+            try:
+                response = await client.post(
+                    self._FD_CHUNK_URL, params=params, headers=self._fd_headers()
+                )
+                status, payload = response.status_code, self._fd_payload(response)
+                if not payload and status >= 400:
+                    payload = {"error": response.text[:300]}
+            except HTTPError as exc:
+                status, payload = 0, {"error": f"{type(exc).__name__}: {exc or 'network error'}"}
+            if status == 200 and payload.get("success"):
+                return status, payload
+            if not self._fd_retryable(status) or attempt == tries:
+                return status, payload
+            LOGGER.warning(f"FileDitch {what} retry {attempt}: HTTP {status} {payload.get('error')}")
+            await asyncio_sleep(self._fd_backoff(attempt, status))
+        return status, payload
+
+    async def _fd_chunked(self, client, file_path, file_size, name):
+        status, init = await self._fd_api(
+            client, {"action": "init", "filename": name, "size": file_size}, "init"
+        )
+        if status != 200 or not init.get("success"):
+            raise _FdFallback(f"chunked init HTTP {status}: {init.get('error')}")
+        up_id = init.get("id")
+        chunk_size = int(init.get("chunk_size") or 0)
+        total = int(init.get("total_chunks") or 0)
+        if not up_id or chunk_size <= 0 or total != -(-file_size // chunk_size):
+            raise _FdFallback(f"chunked init returned unexpected data: {init}")
+
+        loaded = [0] * total
+        state = {"next": 0, "failed": None}
+
+        def refresh():
+            self._processed_bytes = sum(loaded)
+
+        async def put_chunk(i):
+            start = i * chunk_size
+            length = min(chunk_size, file_size - start)
+            for attempt in range(1, self._FD_TRIES + 1):
+                if self._listener.is_cancelled:
+                    raise CancelledError()
+                if state["failed"]:
+                    raise state["failed"]
+
+                def progress(sent, _i=i):
+                    loaded[_i] = sent
+                    refresh()
+
+                try:
+                    response = await client.put(
+                        self._FD_CHUNK_URL,
+                        params={"action": "chunk", "id": up_id, "i": i},
+                        content=RangeFileStream(self, file_path, start, length, progress),
+                        headers=self._fd_headers(
+                            {
+                                "Content-Type": "application/octet-stream",
+                                "Content-Length": str(length),
+                            }
+                        ),
+                    )
+                    code, payload = response.status_code, self._fd_payload(response)
+                    error = payload.get("error") or response.text[:200]
+                except HTTPError as exc:
+                    code, error = 0, f"{type(exc).__name__}: {exc or 'network error'}"
+                    payload = {}
+                if code == 200 and payload.get("success"):
+                    loaded[i] = length
+                    refresh()
+                    return
+                loaded[i] = 0
+                refresh()
+                if not self._fd_retryable(code) or attempt == self._FD_TRIES:
+                    state["failed"] = RuntimeError(
+                        f"FileDitch chunk {i + 1}/{total} failed [HTTP {code}]: {error}"
+                    )
+                    raise state["failed"]
+                LOGGER.warning(f"FileDitch chunk {i + 1}/{total} retry {attempt}: HTTP {code} {error}")
+                await asyncio_sleep(self._fd_backoff(attempt, code))
+
+        async def worker():
+            while True:
+                i = state["next"]
+                state["next"] += 1
+                if i >= total or state["failed"]:
+                    return
+                await put_chunk(i)
+
+        try:
+            await gather(*(worker() for _ in range(min(self._FD_PARALLEL, total))))
+            payload = {}
+            for _ in range(30):
+                status, payload = await self._fd_api(
+                    client, {"action": "finish", "id": up_id}, "finish", tries=8
+                )
+                if status == 409 and payload.get("error") == "incomplete" and payload.get("missing"):
+                    for i in payload["missing"]:
+                        await put_chunk(int(i))
+                    continue
+                break
+            if status != 200 or not payload.get("success") or not payload.get("url"):
+                raise RuntimeError(
+                    f"FileDitch finish failed [HTTP {status}]: {payload.get('error') or payload}"
+                )
+        except BaseException:
+            try:
+                await client.post(
+                    self._FD_CHUNK_URL,
+                    params={"action": "abort", "id": up_id},
+                    headers=self._fd_headers(),
+                    timeout=Timeout(10.0),
+                )
+            except Exception:
+                pass
+            raise
+        return payload
 
     async def _upload_fileditch(self, client, file_path):
+        file_size = await aiopath.getsize(file_path)
+        if file_size <= 0:
+            raise RuntimeError("FileDitch does not accept empty files")
+        name = ospath.basename(file_path)
+        try:
+            payload = await self._fd_chunked(client, file_path, file_size, name)
+            link = payload["url"]
+            self._upload_meta[link] = {"filename": payload.get("filename")}
+            return link
+        except _FdFallback as exc:
+            LOGGER.warning(f"FileDitch chunked upload unavailable, using upload.php: {exc}")
+        return await self._upload_fileditch_raw(client, file_path)
+
+    async def _upload_fileditch_raw(self, client, file_path):
         file_size = await aiopath.getsize(file_path)
         if file_size <= 0:
             raise RuntimeError("FileDitch does not accept empty files")
