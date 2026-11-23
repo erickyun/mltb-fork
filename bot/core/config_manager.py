@@ -23,8 +23,6 @@ class Config:
     IMGCHEST_API_KEY = ""
     IMGBB_API_KEY = ""
     KRAKENFILES_API_KEY = ""
-    UPLOAD_0807_TOKEN = ""
-    UPLOAD_0807_EXPIRY = "0"
     DROPDRIVE_TOKEN = ""
     DROPDRIVE_FOLDER_ID = ""
     FILEDITCH_TOKEN = ""
@@ -164,7 +162,7 @@ class Config:
         if isinstance(converted_value, str):
             converted_value = converted_value.strip()
 
-        if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf", "cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf", "0807", "dd", "dropdrive", "fd", "fileditch"}:
+        if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf", "cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf", "dd", "dropdrive", "fd", "fileditch"}:
             return "rc"
 
         if attr == "URL_SHORTENER" and converted_value not in {
