@@ -1,6 +1,6 @@
 from asyncio import CancelledError, create_task, gather, sleep as asyncio_sleep
 from base64 import b64encode, urlsafe_b64encode
-from hashlib import sha256
+from hashlib import md5 as md5_hash, sha256
 from html import escape
 from json import dumps
 from logging import getLogger
@@ -111,6 +111,7 @@ class RangeFileStream(AsyncByteStream):
         self._start = start
         self._length = length
         self._on_progress = on_progress
+        self.on_chunk = None
 
     async def __aiter__(self):
         sent = 0
@@ -123,6 +124,8 @@ class RangeFileStream(AsyncByteStream):
                 if not chunk:
                     raise RuntimeError("file ended before the upload part was sent")
                 sent += len(chunk)
+                if self.on_chunk:
+                    self.on_chunk(chunk)
                 if self._on_progress:
                     self._on_progress(sent)
                 yield chunk
@@ -1035,6 +1038,227 @@ class HostUploader:
         self._upload_meta[link] = {"id": file_id}
         return link
 
+    # ----------------------------------------------------------------- Mocha
+    _MC_API = "https://api.mocha.my"
+    _MC_SHARE = "https://mocha.my/share/"
+    _MC_PART = 256 * 1024 * 1024
+
+    def _mc_headers(self, json_body=True):
+        key = str(Config.MOCHA_API_KEY or "").strip().strip("'\"")
+        if key.lower().startswith("bearer "):
+            key = key[7:].strip()
+        if not key:
+            raise RuntimeError(
+                "MOCHA_API_KEY is not set. Create an API key on mocha.my and add it to config."
+            )
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; MLTB/1.0)",
+        }
+        if json_body:
+            headers["Content-Type"] = "application/json"
+        return headers
+
+    @staticmethod
+    def _mc_path():
+        path = str(Config.MOCHA_PATH or "/").strip() or "/"
+        if not path.startswith("/"):
+            path = f"/{path}"
+        if not path.endswith("/"):
+            path = f"{path}/"
+        return path
+
+    async def _mc_request(self, client, method, path, what, tries=4, **kwargs):
+        last = None
+        for attempt in range(1, tries + 1):
+            wait = min(30, 2**attempt)
+            try:
+                response = await client.request(method, f"{self._MC_API}{path}", **kwargs)
+            except HTTPError as exc:
+                last = RuntimeError(
+                    f"Mocha {what} failed: {type(exc).__name__}: {exc or 'network error'}"
+                )
+            else:
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {}
+                if response.status_code < 300:
+                    return payload if isinstance(payload, dict) else {}
+                detail = (
+                    (payload.get("error") or payload.get("message"))
+                    if isinstance(payload, dict)
+                    else None
+                ) or response.text[:300]
+                status = response.status_code
+                if status == 401:
+                    raise RuntimeError(f"Mocha auth failed [401] — check MOCHA_API_KEY: {detail}")
+                if status == 413:
+                    raise RuntimeError(f"Mocha file too large for this account [413]: {detail}")
+                last = RuntimeError(f"Mocha {what} failed [{status}]: {detail}")
+                if status != 429 and status < 500:
+                    raise last
+                if status == 429:
+                    try:
+                        wait = max(wait, float(response.headers.get("Retry-After") or 0))
+                    except ValueError:
+                        pass
+            if attempt < tries:
+                await asyncio_sleep(min(wait, 120))
+        raise last
+
+    async def _upload_mocha(self, client, file_path):
+        headers = self._mc_headers()
+        file_size = await aiopath.getsize(file_path)
+        if file_size <= 0:
+            raise RuntimeError("Mocha: empty files are not supported by the bot")
+        if not hasattr(self, "_mc_max_size"):
+            self._mc_max_size = None
+            try:
+                summary = await self._mc_request(
+                    client, "GET", "/api/profile/summary", "profile", tries=2,
+                    headers=self._mc_headers(json_body=False),
+                )
+                self._mc_max_size = summary.get("maxFileSizeBytes")
+                if summary.get("canUseApi") is False:
+                    raise RuntimeError("Mocha: this account is not allowed to use the API")
+            except RuntimeError as exc:
+                if "auth failed" in str(exc) or "not allowed" in str(exc):
+                    raise
+                LOGGER.warning(f"Mocha profile lookup failed: {exc}")
+        if self._mc_max_size and file_size > int(self._mc_max_size):
+            raise RuntimeError(
+                f"Mocha: file is larger than this account's limit "
+                f"({int(self._mc_max_size) / 1024**3:.0f} GB)"
+            )
+
+        name = ospath.basename(file_path)
+        mime = guess_type(name)[0] or "application/octet-stream"
+        path = self._mc_path()
+        init = await self._mc_request(
+            client, "POST", "/api/files/multipart/init", "upload start",
+            json={
+                "originalName": name,
+                "size": file_size,
+                "mimeType": mime,
+                "path": path,
+                "directPartSizeBytes": self._MC_PART,
+            },
+            headers=headers,
+        )
+        session = {
+            "uploadId": init.get("uploadId"),
+            "key": init.get("key"),
+            "nodeId": init.get("nodeId"),
+            "originalName": init.get("originalName") or name,
+            "path": path,
+        }
+        if not session["uploadId"] or not session["key"]:
+            raise RuntimeError(f"Mocha returned unexpected upload data: {init}")
+        if init.get("directPartUpload") is False:
+            raise RuntimeError(
+                "Mocha assigned a storage node without direct part upload; try again later"
+            )
+        part_size = int(init.get("directPartSizeBytes") or self._MC_PART)
+        part_count = max(1, -(-file_size // part_size))
+
+        md5 = md5_hash()
+        parts = []
+        done = 0
+        urls = {}
+        self._processed_bytes = 0
+        try:
+            for number in range(1, part_count + 1):
+                start = (number - 1) * part_size
+                length = min(part_size, file_size - start)
+                md5_before = md5.copy()
+                for attempt in range(1, 6):
+                    if self._listener.is_cancelled:
+                        raise CancelledError()
+                    if number not in urls:
+                        batch = list(range(number, min(part_count, number + 19) + 1))
+                        signed = await self._mc_request(
+                            client, "POST", "/api/files/multipart/presigned",
+                            "part signing", json={**session, "partNumbers": batch},
+                            headers=headers,
+                        )
+                        for item in signed.get("urls") or []:
+                            urls[int(item["partNumber"])] = item["url"]
+                        if number not in urls:
+                            raise RuntimeError(f"Mocha did not sign part {number}")
+                    part_md5 = md5_before.copy()
+
+                    def progress(sent, _done=done):
+                        self._processed_bytes = _done + sent
+
+                    stream = RangeFileStream(self, file_path, start, length, progress)
+                    stream.on_chunk = part_md5.update
+                    try:
+                        response = await client.put(
+                            urls[number],
+                            content=stream,
+                            headers={"Content-Length": str(length)},
+                        )
+                        code = response.status_code
+                        error = f"HTTP {code}: {response.text[:200]}"
+                    except HTTPError as exc:
+                        code, error = 0, f"{type(exc).__name__}: {exc or 'network error'}"
+                    if code and code < 300 and response.headers.get("ETag"):
+                        parts.append({"partNumber": number, "etag": response.headers["ETag"]})
+                        md5 = part_md5
+                        break
+                    self._processed_bytes = done
+                    if code in {401, 403}:
+                        urls.pop(number, None)  # signed URL may have expired
+                    elif code and code < 300:
+                        error = "storage returned no ETag"
+                    elif code and code != 429 and code < 500:
+                        raise RuntimeError(f"Mocha part {number}/{part_count} rejected: {error}")
+                    if attempt == 5:
+                        raise RuntimeError(f"Mocha part {number}/{part_count} failed: {error}")
+                    LOGGER.warning(f"Mocha part {number} retry {attempt}: {error}")
+                    await asyncio_sleep(min(30, 2**attempt))
+                done += length
+                self._processed_bytes = done
+
+            result = await self._mc_request(
+                client, "POST", "/api/files/multipart/complete", "complete", tries=5,
+                json={
+                    **session,
+                    "size": file_size,
+                    "mimeType": mime,
+                    "md5": md5.hexdigest(),
+                    "parts": parts,
+                },
+                headers=headers,
+            )
+        except BaseException:
+            try:
+                await client.post(
+                    f"{self._MC_API}/api/files/multipart/abort",
+                    json={**session, "partNumbers": list(range(1, part_count + 1))},
+                    headers=headers,
+                    timeout=Timeout(15.0),
+                )
+            except Exception:
+                pass
+            raise
+
+        file_id = (result.get("file") or {}).get("id")
+        if not file_id:
+            raise RuntimeError(f"Mocha complete response missing file id: {result}")
+        link_data = await self._mc_request(
+            client, "POST", "/api/permanent-links", "share link",
+            json={"fileId": file_id}, headers=headers,
+        )
+        token = (link_data.get("link") or {}).get("token")
+        if not token:
+            raise RuntimeError(f"Mocha permanent link response missing token: {link_data}")
+        link = f"{self._MC_SHARE}{token}"
+        self._upload_meta[link] = {"id": file_id}
+        return link
+
     # --------------------------------------------------------------- FileDitch
     _FD_UPLOAD_URL = "https://new.fileditch.com/upload.php"
     _FD_CHUNK_URL = "https://new.fileditch.com/chunked.php"
@@ -1545,6 +1769,8 @@ class HostUploader:
             return await self._upload_fileditch(client, file_path)
         if self._host in {"fz", "filez"}:
             return await self._upload_filez(client, file_path)
+        if self._host in {"mc", "mocha"}:
+            return await self._upload_mocha(client, file_path)
 
         raise RuntimeError(f"Unknown upload host: {self._host}")
 
