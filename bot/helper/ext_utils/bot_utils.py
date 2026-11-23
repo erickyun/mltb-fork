@@ -1,3 +1,4 @@
+from ast import literal_eval
 from httpx import AsyncClient
 from asyncio.subprocess import PIPE
 from functools import partial, wraps
@@ -68,7 +69,7 @@ def bt_selection_buttons(id_):
             "Select Files", f"{Config.BASE_URL}/app/files?gid={id_}&pin={pin}"
         )
     buttons.data_button("Done Selecting", f"sel done {gid} {id_}")
-    buttons.data_button("Cancel", f"sel cancel {gid}")
+    buttons.data_button("Close", "sel close")
     return buttons.build_menu(2)
 
 
@@ -118,6 +119,7 @@ def arg_parser(items, arg_base):
         "-ad",
         "-tb",
         "-st",
+        "-ses",
     }
 
     while i < total:
@@ -146,6 +148,7 @@ def arg_parser(items, arg_base):
                     "-ad",
                     "-tb",
                     "-st",
+                    "-ses",
                 ]
             ):
                 arg_base[part] = True
@@ -176,7 +179,7 @@ def arg_parser(items, arg_base):
                             arg_base[part].add(value)
                         else:
                             try:
-                                arg_base[part].add(tuple(eval(value)))
+                                arg_base[part].add(tuple(literal_eval(value)))
                             except:
                                 pass
                     else:

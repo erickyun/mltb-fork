@@ -113,6 +113,20 @@ async def get_user_settings(from_user, stype="main"):
             )
             equal_splits = "Disabled"
         if (
+            user_dict.get("SPLIT_EXT_SUFFIX", False)
+            or "SPLIT_EXT_SUFFIX" not in user_dict
+            and Config.SPLIT_EXT_SUFFIX
+        ):
+            buttons.data_button(
+                "Disable Split Ext Suffix", f"userset {user_id} tog SPLIT_EXT_SUFFIX f"
+            )
+            split_ext_suffix = "Enabled"
+        else:
+            buttons.data_button(
+                "Enable Split Ext Suffix", f"userset {user_id} tog SPLIT_EXT_SUFFIX t"
+            )
+            split_ext_suffix = "Disabled"
+        if (
             user_dict.get("MEDIA_GROUP", False)
             or "MEDIA_GROUP" not in user_dict
             and Config.MEDIA_GROUP
@@ -162,6 +176,21 @@ async def get_user_settings(from_user, stype="main"):
         else:
             hybrid_leech = "Disabled"
 
+        if (
+            user_dict.get("FILES_LINKS", False)
+            or "FILES_LINKS" not in user_dict
+            and Config.FILES_LINKS
+        ):
+            fl = "Enabled"
+            buttons.data_button(
+                "Disable FILES LINKS", f"userset {user_id} tog FILES_LINKS f"
+            )
+        else:
+            fl = "Disabled"
+            buttons.data_button(
+                "Enable FILES LINKS", f"userset {user_id} tog FILES_LINKS t"
+            )
+
         buttons.data_button(
             "Thumbnail Layout", f"userset {user_id} menu THUMBNAIL_LAYOUT"
         )
@@ -188,13 +217,15 @@ Leech Type is <b>{ltype}</b>
 Custom Thumbnail <b>{thumbmsg}</b>
 Leech Split Size is <b>{split_size}</b>
 Equal Splits is <b>{equal_splits}</b>
+Split Ext Suffix is <b>{split_ext_suffix}</b>
 Media Group is <b>{media_group}</b>
 Leech Prefix is <code>{escape(lprefix)}</code>
 Leech Destination is <code>{leech_dest}</code>
 Clone Dump Chats is <code>{cdc}</code>
 Leech by <b>{leech_method}</b> session
-HYBRID Leech is <b>{hybrid_leech}</b>
+Hybrid Leech is <b>{hybrid_leech}</b>
 Thumbnail Layout is <b>{thumb_layout}</b>
+Files Links is <b>{fl}</b>
 """
     elif stype == "rclone":
         buttons.data_button("Rclone Config", f"userset {user_id} menu RCLONE_CONFIG")
@@ -308,21 +339,6 @@ Stop Duplicate is <b>{sd_msg}</b>"""
             f"userset {user_id} tog USER_TOKENS {'f' if user_tokens else 't'}",
         )
 
-        if (
-            user_dict.get("FILES_LINKS", False)
-            or "FILES_LINKS" not in user_dict
-            and Config.FILES_LINKS
-        ):
-            fl = "Enabled"
-            buttons.data_button(
-                "Disable FILES LINKS", f"userset {user_id} tog FILES_LINKS f"
-            )
-        else:
-            fl = "Disabled"
-            buttons.data_button(
-                "Enable FILES LINKS", f"userset {user_id} tog FILES_LINKS t"
-            )
-
         buttons.data_button(
             "Excluded Extensions", f"userset {user_id} menu EXCLUDED_EXTENSIONS"
         )
@@ -387,7 +403,6 @@ Stop Duplicate is <b>{sd_msg}</b>"""
         text = f"""<u>Settings for {name}</u>
 Default Package is <b>{du}</b>
 Use <b>{tr}</b> token/config
-Files Links is <b>{fl}</b>
 Upload Paths is <code>{upload_paths}</code>
 
 Name substitution is <code>{ns_msg}</code>

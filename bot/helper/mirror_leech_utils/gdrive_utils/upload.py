@@ -1,3 +1,4 @@
+from json import loads
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 from logging import getLogger
@@ -30,9 +31,9 @@ class GoogleDriveUpload(GoogleDriveHelper):
         self.is_uploading = True
 
     def user_setting(self):
-        if self.listener.up_dest.startswith("mtp:"):
+        if self.listener.up_dest.startswith("mt:"):
             self.token_path = f"tokens/{self.listener.user_id}.pickle"
-            self.listener.up_dest = self.listener.up_dest.replace("mtp:", "", 1)
+            self.listener.up_dest = self.listener.up_dest.replace("mt:", "", 1)
             self.use_sa = False
         elif self.listener.up_dest.startswith("tp:"):
             self.listener.up_dest = self.listener.up_dest.replace("tp:", "", 1)
@@ -182,7 +183,7 @@ class GoogleDriveUpload(GoogleDriveHelper):
                     continue
                 if err.resp.get("content-type", "").startswith("application/json"):
                     reason = (
-                        eval(err.content).get("error").get("errors")[0].get("reason")
+                        loads(err.content).get("error").get("errors")[0].get("reason")
                     )
                     if reason not in [
                         "userRateLimitExceeded",

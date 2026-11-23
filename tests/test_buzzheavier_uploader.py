@@ -47,8 +47,8 @@ def buzzheavier_module(monkeypatch):
         "bot.core.config_manager": manager,
     }.items():
         monkeypatch.setitem(sys.modules, name, value)
-    sys.modules.pop("bot.helper.mirror_leech_utils.buzzheavier_uploader", None)
-    return importlib.import_module("bot.helper.mirror_leech_utils.buzzheavier_uploader")
+    sys.modules.pop("bot.helper.mirror_leech_utils.upload_utils.buzzheavier_uploader", None)
+    return importlib.import_module("bot.helper.mirror_leech_utils.upload_utils.buzzheavier_uploader")
 
 
 def listener(up_dest="bh", **settings):

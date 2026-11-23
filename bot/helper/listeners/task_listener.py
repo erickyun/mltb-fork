@@ -36,8 +36,8 @@ from ..ext_utils.status_utils import get_readable_file_size
 from ..ext_utils.task_manager import start_from_queued, check_running_tasks
 from ..mirror_leech_utils.gdrive_utils.upload import GoogleDriveUpload
 from ..mirror_leech_utils.rclone_utils.transfer import RcloneTransferHelper
-from ..mirror_leech_utils.buzzheavier_uploader import BuzzHeavierUploader
-from ..mirror_leech_utils.gofile_uploader import GoFileUploader
+from ..mirror_leech_utils.upload_utils.buzzheavier_uploader import BuzzHeavierUploader
+from ..mirror_leech_utils.upload_utils.gofile_uploader import GoFileUploader
 from ..mirror_leech_utils.host_uploader import HostUploader
 from ..mirror_leech_utils.status_utils.gdrive_status import GoogleDriveStatus
 from ..mirror_leech_utils.status_utils.queue_status import QueueStatus
@@ -46,7 +46,7 @@ from ..mirror_leech_utils.status_utils.telegram_status import TelegramStatus
 from ..mirror_leech_utils.status_utils.buzzheavier_status import BuzzHeavierStatus
 from ..mirror_leech_utils.status_utils.gofile_status import GoFileStatus
 from ..mirror_leech_utils.status_utils.host_status import HostUploadStatus
-from ..mirror_leech_utils.telegram_uploader import TelegramUploader
+from ..mirror_leech_utils.upload_utils.telegram_uploader import TelegramUploader
 from ..telegram_helper.button_build import ButtonMaker
 from ..telegram_helper.message_utils import (
     send_message,
@@ -392,7 +392,11 @@ class TaskListener(TaskConfig):
             if mime_type == "Folder":
                 msg += f"\n<b>SubFolders: </b>{folders}"
                 msg += f"\n<b>Files: </b>{files}"
-            if (
+            if self.is_buzzheavier:
+                buttons = ButtonMaker()
+                buttons.url_button("☁️ Cloud Link", link)
+                button = buttons.build_menu()
+            elif (
                 link
                 or rclone_path
                 and Config.RCLONE_SERVE_URL

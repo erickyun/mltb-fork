@@ -7,9 +7,9 @@ from aiofiles import open as aiopen
 from asyncio import CancelledError
 from httpx import AsyncClient, Limits, Timeout, HTTPError
 
-from ..ext_utils.bot_utils import sync_to_async
-from ..ext_utils.files_utils import get_mime_type
-from ...core.config_manager import Config
+from ...ext_utils.bot_utils import sync_to_async
+from ...ext_utils.files_utils import get_mime_type
+from ....core.config_manager import Config
 
 LOGGER = getLogger(__name__)
 

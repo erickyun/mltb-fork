@@ -98,6 +98,10 @@ def direct_link_generator(link):
         return berkasdrive(link)
     elif "swisstransfer.com" in domain:
         return swisstransfer(link)
+    elif "mega.nz" in domain:
+        return mega(link)
+    elif "koramaup.com" in domain:
+        return koramaup(link)
     elif any(x in domain for x in ["akmfiles.com", "akmfls.xyz"]):
         return akmfiles(link)
     elif any(
@@ -195,6 +199,7 @@ def direct_link_generator(link):
             "teltobx.net",
             "telbx.net",
             "linkbox.cloud",
+            "linkbox.zone",
         ]
     ):
         return linkBox(link)
@@ -241,11 +246,110 @@ def get_captcha_token(session, params):
 
 
 def transfer_it(url):
-    resp = post("https://transfer-it-henna.vercel.app/post", json={"url": url})
+    resp = post("https://transfer-it-thezake.vercel.app/api/post", json={"url": url})
     if resp.status_code == 200:
         return resp.json()["url"]
     else:
         raise DirectDownloadLinkException("ERROR: File Expired or File Not Found")
+
+
+def mega(url):
+    api = "https://megadl.the-zake.workers.dev/api/mega"
+    deadline = time() + 120
+    try:
+        data = get(api, params={"url": url}, timeout=40).json()
+        if "error" in data:
+            raise DirectDownloadLinkException(f"ERROR: {data.get('message') or data['error']}")
+    except DirectDownloadLinkException:
+        raise
+    except Exception as e:
+        raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}: {e}")
+
+    job_id = data.get("job_id")
+    while data.get("state") not in ("completed", "partial", "failed", "expired"):
+        remaining = deadline - time()
+        if remaining <= 2:
+            break
+        sleep(2)
+        try:
+            data = get(f"{api}/status", params={"id": job_id}, timeout=min(20, remaining)).json()
+        except Exception:
+            break
+
+    if data.get("state") in ("failed", "expired"):
+        raise DirectDownloadLinkException(f"ERROR: Job {data.get('state')}")
+
+    files = [f for f in data.get("files", []) if f.get("download_url")]
+    if not files:
+        raise DirectDownloadLinkException("ERROR: No downloadable files found")
+
+    if len(files) == 1:
+        return files[0]["download_url"]
+
+    details = {"contents": [], "title": data.get("name") or "Mega", "total_size": 0}
+    for f in files:
+        details["total_size"] += f.get("size") or 0
+        details["contents"].append({
+            "url": f["download_url"],
+            "filename": f["name"],
+            "path": "",
+        })
+    return details
+
+
+def koramaup(url):
+    session = Session()
+    session.headers.update(
+        {
+            "User-Agent": user_agent,
+        }
+    )
+
+    try:
+        response = session.get(url, timeout=10)
+        if response.status_code != 200:
+            raise DirectDownloadLinkException(
+                f"ERROR: HTTP status {response.status_code}"
+            )
+
+    except Exception as e:
+        raise DirectDownloadLinkException(f"ERROR: Fallo de conexión -> {e}")
+
+    html = HTML(response.text)
+
+    if error := html.xpath('//div[@class="uk-alert-danger uk-alert"]//p/text()'):
+        raise DirectDownloadLinkException(f"ERROR: {error[0]}")
+
+    if content := html.xpath("//script[contains(text(),'download-timer')]"):
+        content = content[0].text or ""
+        if match := search(r"""href\s=\s\\['"]([^'"]+)[\\"]';""", content):
+            intermediate_url = match.group(1)
+
+            sleep(5)
+            try:
+                redirect_response = session.get(
+                    intermediate_url,
+                    timeout=15,
+                    allow_redirects=False,
+                    headers={"Referer": url},
+                )
+            except Exception as e:
+                raise DirectDownloadLinkException(
+                    f"ERROR: Failure while following a redirection -> {e}"
+                )
+
+            if redirect_response.status_code in (301, 302, 303, 307, 308):
+                final_url = redirect_response.headers.get("Location")
+                if final_url:
+                    return final_url
+
+                raise DirectDownloadLinkException(
+                    "ERROR: Redirect without a header Location"
+                )
+
+            return intermediate_url
+
+    raise DirectDownloadLinkException("ERROR: Direct Link not found")
 
 
 def buzzheavier(url):

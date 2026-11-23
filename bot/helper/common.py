@@ -1,3 +1,4 @@
+from ast import literal_eval
 from aiofiles.os import path as aiopath, remove, makedirs, listdir
 from aiofiles import open as aiopen
 from asyncio import sleep, gather
@@ -10,6 +11,7 @@ from shlex import split
 from collections import Counter
 from copy import deepcopy
 from natsort import natsorted
+
 
 from .. import (
     user_data,
@@ -57,6 +59,7 @@ from .ext_utils.media_utils import (
 )
 from .telegram_helper.message_utils import (
     send_message,
+    send_rich_message,
     send_status_message,
     get_tg_link_message,
     temp_download,
@@ -103,6 +106,7 @@ class TaskConfig:
         self.is_buzzheavier = False
         self.is_gofile = False
         self.equal_splits = False
+        self.split_ext_suffix = False
         self.user_transmission = False
         self.hybrid_leech = False
         self.extract = False
@@ -146,7 +150,7 @@ class TaskConfig:
         ]
 
     def get_token_path(self, dest):
-        if dest.startswith("mtp:"):
+        if dest.startswith("mt:"):
             return f"tokens/{self.user_id}.pickle"
         elif (
             dest.startswith("sa:")
@@ -159,7 +163,7 @@ class TaskConfig:
 
     def get_config_path(self, dest):
         return (
-            f"rclone/{self.user_id}.conf" if dest.startswith("mrcc:") else "rclone.conf"
+            f"rclone/{self.user_id}.conf" if dest.startswith("mt:") else "rclone.conf"
         )
 
     async def is_token_exists(self, path, status):
@@ -209,16 +213,16 @@ class TaskConfig:
         if self.link not in ["rcl", "gdl"]:
             if not self.is_jd:
                 if is_rclone_path(self.link):
-                    if not self.link.startswith("mrcc:") and self.user_dict.get(
+                    if not self.link.startswith("mt:") and self.user_dict.get(
                         "USER_TOKENS", False
                     ):
-                        self.link = f"mrcc:{self.link}"
+                        self.link = f"mt:{self.link}"
                     await self.is_token_exists(self.link, "dl")
                 elif is_gdrive_link(self.link):
                     if not self.link.startswith(
-                        ("mtp:", "tp:", "sa:")
+                        ("mt:", "tp:", "sa:")
                     ) and self.user_dict.get("USER_TOKENS", False):
-                        self.link = f"mtp:{self.link}"
+                        self.link = f"mt:{self.link}"
                     await self.is_token_exists(self.link, "dl")
         elif self.link == "rcl":
             if not self.is_ytdlp and not self.is_jd and not self.is_gallerydl:
@@ -231,11 +235,11 @@ class TaskConfig:
                 if not is_gdrive_id(self.link):
                     raise ValueError(self.link)
 
-        self.user_transmission = TgClient.IS_PREMIUM_USER and (
+        self.user_transmission = (
             self.user_dict.get("USER_TRANSMISSION")
             or Config.USER_TRANSMISSION
             and "USER_TRANSMISSION" not in self.user_dict
-        )
+        ) and TgClient.user is not None
 
         if self.user_dict.get("UPLOAD_PATHS", False):
             if self.up_dest in self.user_dict["UPLOAD_PATHS"]:
@@ -280,7 +284,17 @@ class TaskConfig:
             self.user_dict.get("DEFAULT_UPLOAD", "") or Config.DEFAULT_UPLOAD
         )
         DIRECT_UPLOADS = {"cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf", "0807", "dd", "dropdrive", "fd", "fileditch"}
-        
+
+        if self.is_leech:
+            if (
+                self.up_dest in {"gf", "bh"}
+                or self.up_dest in DIRECT_UPLOADS
+                or self.up_dest.startswith(("bh:", "mt:bh:"))
+            ):
+                raise ValueError(
+                    "GoFile/BuzzHeavier/host uploads are mirror-only, use /mirror instead of leech!"
+                )
+            default_upload = ""
         if (
             self.up_dest == "bh"
             or self.up_dest.startswith(("bh:", "mt:bh:"))
@@ -306,7 +320,9 @@ class TaskConfig:
             self.is_buzzheavier = True
         elif default_upload == "gf" or self.up_dest == "gf":
             self.is_gofile = True
-        elif default_upload in DIRECT_UPLOADS or self.up_dest in DIRECT_UPLOADS:
+        elif self.up_dest in DIRECT_UPLOADS or (
+            not self.up_dest and default_upload in DIRECT_UPLOADS
+        ):
             self.direct_upload = self.up_dest or default_upload
 
         self.files_links = self.user_dict.get("FILES_LINKS", False) or (
@@ -328,14 +344,14 @@ class TaskConfig:
             if self.up_dest not in ["rcl", "gdl"]:
                 if is_gdrive_id(self.up_dest):
                     if not self.up_dest.startswith(
-                        ("mtp:", "tp:", "sa:")
+                        ("mt:", "tp:", "sa:")
                     ) and self.user_dict.get("USER_TOKENS", False):
-                        self.up_dest = f"mtp:{self.up_dest}"
+                        self.up_dest = f"mt:{self.up_dest}"
                 elif is_rclone_path(self.up_dest):
-                    if not self.up_dest.startswith("mrcc:") and self.user_dict.get(
+                    if not self.up_dest.startswith("mt:") and self.user_dict.get(
                         "USER_TOKENS", False
                     ):
-                        self.up_dest = f"mrcc:{self.up_dest}"
+                        self.up_dest = f"mt:{self.up_dest}"
                     self.up_dest = self.up_dest.strip("/")
                 else:
                     raise ValueError("Wrong Upload Destination!")
@@ -396,21 +412,23 @@ class TaskConfig:
             if self.bot_trans:
                 self.user_transmission = False
                 self.hybrid_leech = False
-            if self.user_trans:
-                self.user_transmission = TgClient.IS_PREMIUM_USER
+            if self.user_trans and TgClient.user is not None:
+                self.user_transmission = True
             if self.up_dest:
                 if not isinstance(self.up_dest, int):
                     if self.up_dest.startswith("b:"):
                         self.up_dest = self.up_dest.replace("b:", "", 1)
                         self.user_transmission = False
                         self.hybrid_leech = False
-                    elif self.up_dest.startswith("u:"):
+                    elif self.up_dest.startswith("u:") and TgClient.user is not None:
                         self.up_dest = self.up_dest.replace("u:", "", 1)
-                        self.user_transmission = TgClient.IS_PREMIUM_USER
-                    elif self.up_dest.startswith("h:"):
+                        self.user_transmission = True
+                    elif self.up_dest.startswith("h:") and TgClient.user is not None:
                         self.up_dest = self.up_dest.replace("h:", "", 1)
-                        self.user_transmission = TgClient.IS_PREMIUM_USER
-                        self.hybrid_leech = self.user_transmission
+                        self.user_transmission = True
+                        self.hybrid_leech = (
+                            self.user_transmission and TgClient.IS_PREMIUM_USER
+                        )
                     if "|" in self.up_dest:
                         self.up_dest, self.chat_thread_id = list(
                             map(
@@ -520,8 +538,16 @@ class TaskConfig:
                 or Config.EQUAL_SPLITS
                 and "EQUAL_SPLITS" not in self.user_dict
             )
+            self.split_ext_suffix = (
+                self.split_ext_suffix
+                or self.user_dict.get("SPLIT_EXT_SUFFIX")
+                or Config.SPLIT_EXT_SUFFIX
+                and "SPLIT_EXT_SUFFIX" not in self.user_dict
+            )
             self.max_split_size = (
-                TgClient.MAX_SPLIT_SIZE if self.user_transmission else 2097152000
+                TgClient.MAX_SPLIT_SIZE
+                if self.user_transmission and TgClient.IS_PREMIUM_USER
+                else 2097152000
             )
             self.split_size = min(self.split_size, self.max_split_size)
 
@@ -558,7 +584,7 @@ class TaskConfig:
                     if self.clone_dump_chats.startswith(
                         "["
                     ) and self.clone_dump_chats.endswith("]"):
-                        self.clone_dump_chats = eval(self.clone_dump_chats)
+                        self.clone_dump_chats = literal_eval(self.clone_dump_chats)
                     else:
                         self.clone_dump_chats = [self.clone_dump_chats]
                 temp_dict = {}
@@ -598,10 +624,10 @@ class TaskConfig:
         await sleep(7)
         if not self.multi_tag and self.multi > 1:
             self.multi_tag = token_urlsafe(3)
-            multi_tags.add(self.multi_tag)
+            multi_tags[self.multi_tag] = self.user_id
         elif self.multi <= 1:
             if self.multi_tag in multi_tags:
-                multi_tags.discard(self.multi_tag)
+                del multi_tags[self.multi_tag]
             return
         if self.multi_tag and self.multi_tag not in multi_tags:
             await send_message(
@@ -673,7 +699,7 @@ class TaskConfig:
             msg = " ".join(b_msg)
             if len(self.bulk) > 2:
                 self.multi_tag = token_urlsafe(3)
-                multi_tags.add(self.multi_tag)
+                multi_tags[self.multi_tag] = self.user_id
                 msg += f"\nCancel Multi: <code>/{BotCommands.CancelTaskCommand[1]} {self.multi_tag}</code>"
             nextmsg = await send_message(self.message, msg)
             if self.message.from_user:
@@ -1240,7 +1266,7 @@ class TaskConfig:
                     split_size = self.split_size
                 if not self.as_doc and (await get_document_type(f_path))[0]:
                     self.progress = True
-                    res = await ffmpeg.split(f_path, file_, parts, split_size)
+                    res = await ffmpeg.split(f_path, file_, parts, split_size, self.split_ext_suffix)
                 else:
                     self.progress = False
                     res = await split_file(f_path, split_size, self)

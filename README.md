@@ -205,7 +205,7 @@ programming in Python.
 - Add sudo users
 - Ability to save upload paths
 - Name Substitution to rename the files before upload
-- User can select whether he want to use his rclone.conf/token.pickle without adding mpt: or mrcc: before path/gd-id
+- User can select whether he want to use his rclone.conf/token.pickle without adding mt: before path/gd-id
 - FFmpeg commands to execute it after download (task option)
 - Supported Direct links Generators:
 
@@ -296,15 +296,13 @@ Fill up rest of the fields. Meaning of each field is discussed below.
 
 - `SUDO_USERS` (`Str`):  Fill user_id of users whom you want to give sudo permission. Separate them by spaces.
 
-- `UPLOAD_PATHS` (`Dict`): Send Dict of keys that have path values. Example: {"path 1": "remote:rclonefolder", "path 2": "gdrive1 id", "path 3": "tg chat id", "path 4": "mrcc:remote:", "path 5": "b: @username"}. 
+- `UPLOAD_PATHS` (`Dict`): Send Dict of keys that have path values. Example: {"path 1": "remote:rclonefolder", "path 2": "gdrive1 id", "path 3": "tg chat id", "path 4": "mt:remote:", "path 5": "b: @username"}. 
 
 - `DEFAULT_UPLOAD` (`Str`): Whether `rc` to upload to `RCLONE_PATH` or `gd` to upload to `GDRIVE_ID` or `bh` to upload to `BUZZHEAVIER_ACCOUNT_ID`. Default is `rc`. Read More [HERE](https://github.com/anasty17/mirror-leech-telegram-bot/tree/master#upload).
 
 - `STATUS_UPDATE_INTERVAL` (`Int`): Time in seconds after which the progress/status message will be updated. Recommended `10` seconds at least.
 
 - `STATUS_LIMIT` (`Int`): Limit the no. of tasks shown in status message with buttons. Default is `4`. **NOTE**: Recommended limit is `4` tasks.
-
-- `FILES_LINKS` (`Bool`): Enable files link after Leech or BuzzHeavier upload complete, those link(s) will be sent in the same chat where you sent the cmd. Default is `False`.
 
 - `EXCLUDED_EXTENSIONS` (`Str`): File extensions that won't upload/clone. Separate them by spaces.
 
@@ -328,6 +326,8 @@ options [HERE](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#
 - `ALLDEBRID_API_KEY` (`Str`): Alldebrid api key.
 
 - `BUZZHEAVIER_ACCOUNT_ID` (`Str`): Buzzheavier account ID.
+
+- `TLDV_TOKEN` (`Str`): tldv.io authorization token for downloading private meetings. Refer to the tldv.io section under Extras for how to get the token.
 
 - `USE_SERVICE_ACCOUNTS` (`Bool`): Whether to use Service Accounts or not, with google-api-python-client. For this to work
 see [Using Service Accounts](https://github.com/anasty17/mirror-leech-telegram-bot#generate-service-accounts-what-is-service-account) section below. Default is `False`.
@@ -397,6 +397,7 @@ see [Using Service Accounts](https://github.com/anasty17/mirror-leech-telegram-b
 - `AS_DOCUMENT` (`Bool`): Default type of Telegram file upload. Default is `False` mean as media.
 
 - `EQUAL_SPLITS` (`Bool`): Split files larger than **LEECH_SPLIT_SIZE** into equal parts size (Not working with zip cmd). Default is `False`.
+- `SPLIT_EXT_SUFFIX` (`Bool`): Split media files naming format as `filename.ext.001` instead of `filename.part001.ext`. Default is `False`.
 
 - `MEDIA_GROUP` (`Bool`): View Uploaded split file parts in media group. Default is `False`.
 
@@ -411,6 +412,8 @@ see [Using Service Accounts](https://github.com/anasty17/mirror-leech-telegram-b
 - `CLONE_DUMP_CHATS` (`List`|`Int`|`Str`): LIST of ID|USERNAME or ID or USERNAME or PM(private message) to where files would be cloned. Add `-100` before channel/superGroup id. To use only specific topic write it in this format `chat_id|thread_id`. Ex: ["pm", -100xxxx555, "@username", "@username|8", "-100xxx8886|2"] or -100xxx5555 or "-100xx555566|6" or "@username" or "pm". **Note**: Add `chat_id` inside `quotation marks` only if you will add thread_id with it.
 
 - `THUMBNAIL_LAYOUT` (`Str`): Thumbnail layout (widthxheight, 2x2, 3x3, 2x4, 4x4, ...) of how many photo arranged for the thumbnail.
+
+- `FILES_LINKS` (`Bool`): Enable files link after Leech complete, those link(s) will be sent in the same chat where you sent the cmd. Default is `False`.
 
 **7. qBittorrent/Aria2c/Sabnzbd**
 
@@ -711,10 +714,29 @@ python3 generate_drive_token.py
 - If `DEFAULT_UPLOAD` = 'gd' then you must fill `GDRIVE_ID` with folder/TD id.
 - rclone.conf can be added before deploy like token.pickle to repo folder root or use bsetting to upload it as private
   file.
-- If rclone.conf uploaded from usetting or added in `rclone/{user_id}.conf` then `RCLONE_PATH` must start with `mrcc:`.
+- If rclone.conf uploaded from usetting or added in `rclone/{user_id}.conf` then `RCLONE_PATH` must start with `mt:`.
 - Whenever you want to write path manually to use user rclone.conf that added from usetting then you must add
-  the `mrcc:` at the beginning.
-- So in short, up: has 4 possible values which are: `gd` (Upload to GDRIVE_ID), `rc` (Upload to RCLONE_PATH), `rcl` (Select Rclone Path) and `rclone_path` (remote:path (owner rclone.conf) or `mrcc`:remote:path (user rclone.conf))
+  the `mt:` at the beginning.
+- So in short, up: has 4 possible values which are: `gd` (Upload to GDRIVE_ID), `rc` (Upload to RCLONE_PATH), `rcl` (Select Rclone Path) and `rclone_path` (remote:path (owner rclone.conf) or `mt`:remote:path (user rclone.conf))
+
+------
+
+</details>
+
+<details>
+  <summary><h5>Downloading from tldv.io (Private Meetings)</h5></summary>
+
+For public meetings, no authentication token is required. For private meetings, you need a valid `tldvtoken` cookie value to authenticate:
+
+1. Log in to your account on [tldv.io](https://tldv.io).
+2. Open developer tools in your browser (F12 or right-click -> Inspect).
+3. Go to the **Application** tab (Chrome/Edge) or **Storage** tab (Firefox).
+4. Expand **Cookies** in the sidebar and select `https://tldv.io` or `https://app.tldv.io`.
+5. Find the cookie named `tldvtoken` and copy its value.
+6. Use this token in the bot:
+   - **Globally**: Add the token to `TLDV_TOKEN` in `config.py`.
+   - **Per-command**: Pass the token in the command's custom headers flag, for example:
+     `/mirror https://tldv.io/app/meetings/MEETING_ID -h cookie: tldvtoken=YOUR_TOKEN`
 
 ------
 

@@ -1,3 +1,4 @@
+from json import loads
 from PIL import Image
 from aiofiles.os import remove, path as aiopath, makedirs
 from asyncio import (
@@ -53,7 +54,7 @@ async def get_media_info(path):
         LOGGER.error(f"Get Media Info: {e}. Mostly File not found! - File: {path}")
         return 0, None, None
     if result[0] and result[2] == 0:
-        fields = eval(result[0]).get("format")
+        fields = loads(result[0]).get("format")
         if fields is None:
             LOGGER.error(f"get_media_info: {result}")
             return 0, None, None
@@ -101,7 +102,7 @@ async def get_document_type(path):
             is_video = True
         return is_video, is_audio, is_image
     if result[0] and result[2] == 0:
-        fields = eval(result[0]).get("streams")
+        fields = loads(result[0]).get("streams")
         if fields is None:
             LOGGER.error(f"get_document_type: {result}")
             return is_video, is_audio, is_image
@@ -662,7 +663,7 @@ class FFMpeg:
                 await remove(output_file)
             return False
 
-    async def split(self, f_path, file_, parts, split_size):
+    async def split(self, f_path, file_, parts, split_size, split_ext_suffix=False):
         self.clear()
         multi_streams = True
         self._total_time = duration = (await get_media_info(f_path))[0]
@@ -671,7 +672,10 @@ class FFMpeg:
         start_time = 0
         i = 1
         while i <= parts or start_time < duration - 4:
-            out_path = f_path.replace(file_, f"{base_name}.part{i:03}{extension}")
+            if split_ext_suffix:
+                out_path = f_path.replace(file_, f"{file_}.{i:03}")
+            else:
+                out_path = f_path.replace(file_, f"{base_name}.part{i:03}{extension}")
             cmd = [
                 "taskset",
                 "-c",
