@@ -1248,13 +1248,28 @@ class HostUploader:
         file_id = (result.get("file") or {}).get("id")
         if not file_id:
             raise RuntimeError(f"Mocha complete response missing file id: {result}")
-        link_data = await self._mc_request(
-            client, "POST", "/api/permanent-links", "share link",
-            json={"fileId": file_id}, headers=headers,
-        )
-        token = (link_data.get("link") or {}).get("token")
+        token = None
+        try:
+            link_data = await self._mc_request(
+                client, "POST", "/api/permanent-links", "permanent link",
+                json={"fileId": file_id}, headers=headers,
+            )
+            token = (link_data.get("link") or {}).get("token")
+        except RuntimeError as exc:
+            if "auth failed" in str(exc):
+                raise
+            LOGGER.warning(f"Mocha permanent link unavailable, creating a share: {exc}")
         if not token:
-            raise RuntimeError(f"Mocha permanent link response missing token: {link_data}")
+            # Plans without permanent links still get a normal (non-expiring) share.
+            share = await self._mc_request(
+                client, "POST", "/api/shares", "share link",
+                json={"fileId": file_id}, headers=headers,
+            )
+            token = (share.get("share") or {}).get("token")
+        if not token:
+            raise RuntimeError(
+                f"Mocha uploaded the file (id {file_id}) but returned no share token"
+            )
         link = f"{self._MC_SHARE}{token}"
         self._upload_meta[link] = {"id": file_id}
         return link
