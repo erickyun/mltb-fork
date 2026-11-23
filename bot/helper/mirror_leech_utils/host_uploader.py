@@ -1,10 +1,12 @@
 from asyncio import CancelledError, create_task, gather, sleep as asyncio_sleep
-from base64 import b64encode
+from base64 import b64encode, urlsafe_b64encode
 from hashlib import sha256
 from html import escape
+from json import dumps
 from logging import getLogger
 from mimetypes import guess_type
 from os import path as ospath, walk
+from secrets import token_bytes
 from time import time
 from urllib.parse import quote, urlparse
 from uuid import uuid4
@@ -746,6 +748,293 @@ class HostUploader:
         except Exception:
             pass
 
+    # ------------------------------------------------------------- filez.stream
+    _FZ_BASE = "https://filez.stream"
+    _FZ_CHUNK = 1024 * 1024
+    _FZ_TAG = 16
+    _FZ_EXPIRY = {"1h", "1d", "7d", "30d", "never"}
+
+    @staticmethod
+    def _fz_crypto():
+        """AES-GCM + HKDF from pycryptodomex (installed with yt-dlp) or fallbacks."""
+        try:
+            from Cryptodome.Cipher import AES
+            from Cryptodome.Hash import SHA256
+            from Cryptodome.Protocol.KDF import HKDF
+        except ImportError:
+            try:
+                from Crypto.Cipher import AES
+                from Crypto.Hash import SHA256
+                from Crypto.Protocol.KDF import HKDF
+            except ImportError:
+                AES = None
+        if AES is not None:
+
+            def hkdf(key, salt, info):
+                return HKDF(key, 32, salt, SHA256, context=info)
+
+            def seal(key, nonce, data, aad=None):
+                cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+                if aad is not None:
+                    cipher.update(aad)
+                ct, tag = cipher.encrypt_and_digest(data)
+                return ct + tag
+
+            return hkdf, seal
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            from cryptography.hazmat.primitives.hashes import SHA256 as CSHA256
+            from cryptography.hazmat.primitives.kdf.hkdf import HKDF as CHKDF
+        except ImportError as exc:
+            raise RuntimeError(
+                "filez.stream needs pycryptodomex (comes with yt-dlp[default]) "
+                "or cryptography installed"
+            ) from exc
+
+        def hkdf(key, salt, info):
+            return CHKDF(algorithm=CSHA256(), length=32, salt=salt, info=info).derive(key)
+
+        def seal(key, nonce, data, aad=None):
+            return AESGCM(key).encrypt(nonce, data, aad)
+
+        return hkdf, seal
+
+    @staticmethod
+    def _b64url(data):
+        return urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    def _fz_auth(self):
+        key = str(Config.FILEZ_KEY or "").strip().strip("'\"").lower()
+        if len(key) != 64 or any(c not in "0123456789abcdef" for c in key):
+            raise RuntimeError(
+                "FILEZ_KEY must be 64 hex characters. Create one on the server with "
+                "`python3 -c \"import secrets; print(secrets.token_hex(32))\"`, keep it "
+                "secret, then try again: the error will show the account ID to send "
+                "to filez.stream."
+            )
+        return key, sha256(bytes.fromhex(key)).hexdigest()
+
+    def _fz_headers(self, auth, json_body=True):
+        headers = {
+            "x-vault-auth": auth,
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; MLTB/1.0)",
+        }
+        if json_body:
+            headers["Content-Type"] = "application/json"
+        return headers
+
+    def _fz_error(self, response, what, account):
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        detail = (
+            (payload.get("error") or payload.get("message")) if isinstance(payload, dict) else None
+        ) or response.text[:300]
+        status = response.status_code
+        if status in {401, 403}:
+            return RuntimeError(
+                f"filez.stream {what} refused [{status}]: {detail} — the bot account is "
+                f"probably not allowed yet. Send account ID {account} to filez.stream "
+                "(Discord or filez.stream@pm.me) and ask for x-vault-auth uploads."
+            )
+        if status == 415:
+            return RuntimeError(f"filez.stream blocked this file type [415]: {detail}")
+        return RuntimeError(f"filez.stream {what} failed [{status}]: {detail}")
+
+    async def _fz_request(self, client, method, path, what, account, tries=4, **kwargs):
+        last = None
+        for attempt in range(1, tries + 1):
+            try:
+                response = await client.request(method, f"{self._FZ_BASE}{path}", **kwargs)
+            except HTTPError as exc:
+                last = RuntimeError(
+                    f"filez.stream {what} failed: {type(exc).__name__}: {exc or 'network error'}"
+                )
+            else:
+                if response.status_code < 300:
+                    try:
+                        return response.json()
+                    except ValueError:
+                        return {}
+                last = self._fz_error(response, what, account)
+                if response.status_code != 429 and response.status_code < 500:
+                    raise last
+            if attempt < tries:
+                await asyncio_sleep(min(30, 2**attempt))
+        raise last
+
+    async def _upload_filez(self, client, file_path):
+        auth, account = self._fz_auth()
+        hkdf, seal = self._fz_crypto()
+        file_size = await aiopath.getsize(file_path)
+        if file_size <= 0:
+            raise RuntimeError("filez.stream: empty files are not supported by the bot")
+        name = ospath.basename(file_path)
+        mime = guess_type(name)[0] or "application/octet-stream"
+        extensions = [e.lower() for e in name.split(".")[1:] if e]
+        expiry = str(Config.FILEZ_EXPIRY or "never").strip().lower()
+        if expiry not in self._FZ_EXPIRY:
+            expiry = "never"
+
+        link_key = token_bytes(32)
+        content_key = hkdf(link_key, b"filez.stream/v1", b"content")
+        meta_key = hkdf(link_key, b"filez.stream/v1", b"meta")
+        meta_iv = token_bytes(12)
+        meta = dumps({"n": name, "t": mime, "s": file_size}, separators=(",", ":"))
+        enc_meta = self._b64url(meta_iv + seal(meta_key, meta_iv, meta.encode()))
+        wrap_key = hkdf(bytes.fromhex(auth), b"filez.stream/vault", b"wrap")
+        wrap_iv = token_bytes(12)
+        wrapped = self._b64url(wrap_iv + seal(wrap_key, wrap_iv, link_key))
+
+        headers = self._fz_headers(auth)
+        init = await self._fz_request(
+            client, "POST", "/api/upload", "upload start", account,
+            json={
+                "size": file_size,
+                "encMeta": enc_meta,
+                "wrappedKey": wrapped,
+                "uploadRef": uuid4().hex,
+                "expiry": expiry,
+                "fileType": {"extensions": extensions, "mime": mime},
+            },
+            headers=headers,
+        )
+        file_id = init.get("id")
+        part_size = int(init.get("partSize") or 0)
+        part_count = int(init.get("partCount") or 0)
+        if (
+            not file_id
+            or part_size <= 0
+            or part_size % self._FZ_CHUNK
+            or part_count != -(-file_size // part_size)
+        ):
+            raise RuntimeError(f"filez.stream returned unexpected upload settings: {init}")
+        total_chunks = -(-file_size // self._FZ_CHUNK)
+        link = f"{self._FZ_BASE}/{file_id}#{self._b64url(link_key)}"
+
+        uploader = self
+
+        class SealedPart(AsyncByteStream):
+            def __init__(self, number):
+                self.start = (number - 1) * part_size
+                self.length = min(part_size, file_size - self.start)
+                self.first_chunk = self.start // uploader._FZ_CHUNK
+                self.chunks = -(-self.length // uploader._FZ_CHUNK)
+                self.sealed_len = self.length + self.chunks * uploader._FZ_TAG
+
+            async def __aiter__(self):
+                async with aiopen(file_path, "rb") as fh:
+                    await fh.seek(self.start)
+                    for k in range(self.chunks):
+                        if uploader._listener.is_cancelled:
+                            raise CancelledError()
+                        plain = await fh.read(
+                            min(uploader._FZ_CHUNK, self.length - k * uploader._FZ_CHUNK)
+                        )
+                        index = self.first_chunk + k
+                        nonce = b"\x00" * 4 + index.to_bytes(8, "big")
+                        aad = b"\x01" if index == total_chunks - 1 else b"\x00"
+                        uploader._processed_bytes = self_done + k * uploader._FZ_CHUNK + len(plain)
+                        yield seal(content_key, nonce, plain, aad)
+
+        urls = {}
+
+        async def sign(numbers):
+            payload = await self._fz_request(
+                client, "POST", f"/api/upload/{file_id}/sign", "part signing", account,
+                json={"parts": numbers}, headers=headers,
+            )
+            for key, value in (payload.get("urls") or {}).items():
+                urls[int(key)] = value
+
+        parts = []
+        self_done = 0
+        self._processed_bytes = 0
+        try:
+            for number in range(1, part_count + 1):
+                if number not in urls:
+                    await sign(list(range(number, min(part_count, number + 99) + 1)))
+                for attempt in range(1, 6):
+                    if self._listener.is_cancelled:
+                        raise CancelledError()
+                    url = urls.get(number)
+                    if not url:
+                        raise RuntimeError(f"filez.stream did not sign part {number}")
+                    part = SealedPart(number)
+                    try:
+                        response = await client.put(
+                            url if url.startswith("http") else f"{self._FZ_BASE}{url}",
+                            content=part,
+                            headers={
+                                "x-vault-auth": auth,
+                                "Content-Type": "application/octet-stream",
+                                "Content-Length": str(part.sealed_len),
+                                "User-Agent": "Mozilla/5.0 (compatible; MLTB/1.0)",
+                            },
+                        )
+                    except HTTPError as exc:
+                        error = RuntimeError(
+                            f"filez.stream part {number}/{part_count} failed: "
+                            f"{type(exc).__name__}: {exc or 'network error'}"
+                        )
+                        code = 0
+                    else:
+                        code = response.status_code
+                        if code < 300 and response.headers.get("ETag"):
+                            parts.append({"n": number, "etag": response.headers["ETag"]})
+                            break
+                        error = self._fz_error(response, f"part {number}/{part_count}", account)
+                        if code < 300:
+                            error = RuntimeError(f"filez.stream part {number} returned no ETag")
+                        elif code in {401, 403}:
+                            urls.pop(number, None)  # signed URL may have expired
+                            await sign([number])
+                        elif code != 429 and code < 500:
+                            raise error
+                    self._processed_bytes = self_done
+                    if attempt == 5:
+                        raise error
+                    LOGGER.warning(f"filez.stream part {number} retry {attempt}: {error}")
+                    await asyncio_sleep(min(30, 2**attempt))
+                self_done += SealedPart(number).length
+                self._processed_bytes = self_done
+
+            await self._fz_request(
+                client, "POST", f"/api/upload/{file_id}/complete", "complete", account,
+                json={"async": True, "parts": parts}, headers=headers,
+            )
+        except BaseException:
+            try:
+                await client.delete(
+                    f"{self._FZ_BASE}/api/files/{file_id}",
+                    headers=self._fz_headers(auth, json_body=False),
+                    timeout=Timeout(15.0),
+                )
+            except Exception:
+                pass
+            raise
+
+        # Downloads open once the server reports "ready"; wait a while for it.
+        status = None
+        for _ in range(120):
+            try:
+                payload = await self._fz_request(
+                    client, "GET", f"/api/upload/{file_id}/status", "status", account,
+                    tries=2, headers=self._fz_headers(auth, json_body=False),
+                )
+                status = payload.get("status")
+            except RuntimeError as exc:
+                LOGGER.warning(f"filez.stream status check failed: {exc}")
+            if status == "ready" or self._listener.is_cancelled:
+                break
+            await asyncio_sleep(5)
+        if status != "ready":
+            LOGGER.warning(f"filez.stream {file_id} not ready yet (status: {status}); link sent anyway")
+        self._upload_meta[link] = {"id": file_id}
+        return link
+
     # --------------------------------------------------------------- FileDitch
     _FD_UPLOAD_URL = "https://new.fileditch.com/upload.php"
     _FD_CHUNK_URL = "https://new.fileditch.com/chunked.php"
@@ -1254,6 +1543,8 @@ class HostUploader:
             return await self._upload_dropdrive(client, file_path)
         if self._host in {"fd", "fileditch"}:
             return await self._upload_fileditch(client, file_path)
+        if self._host in {"fz", "filez"}:
+            return await self._upload_filez(client, file_path)
 
         raise RuntimeError(f"Unknown upload host: {self._host}")
 

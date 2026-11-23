@@ -26,6 +26,8 @@ class Config:
     DROPDRIVE_TOKEN = ""
     DROPDRIVE_FOLDER_ID = ""
     FILEDITCH_TOKEN = ""
+    FILEZ_KEY = ""
+    FILEZ_EXPIRY = "never"
     URL_SHORTENER = "spoome"
     URL_SHORTENER_PROXY = ""
     TLY_API_TOKEN = ""
@@ -162,7 +164,7 @@ class Config:
         if isinstance(converted_value, str):
             converted_value = converted_value.strip()
 
-        if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf", "cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf", "dd", "dropdrive", "fd", "fileditch"}:
+        if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf", "cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf", "dd", "dropdrive", "fd", "fileditch", "fz", "filez"}:
             return "rc"
 
         if attr == "URL_SHORTENER" and converted_value not in {
