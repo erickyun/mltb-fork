@@ -84,6 +84,7 @@ class Config:
     STREAM_PORT = 8088
     STREAM_CHANNEL = 0
     STREAM_BOT_TOKENS = []
+    STREAM_SECRET = ""
     SUDO_USERS = ""
     TELEGRAM_API = 0
     TELEGRAM_HASH = ""

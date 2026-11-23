@@ -1,4 +1,5 @@
 from hashlib import sha256
+from hmac import new as hmac_new
 from logging import getLogger
 from urllib.parse import quote_plus
 
@@ -52,9 +53,19 @@ def get_file_name(message):
     return f"{media_type}-{message.id}{suffix}"
 
 
-def make_stream_hash(message_id, file_unique_id):
-    payload = f"{message_id}:{file_unique_id}"
-    return sha256(payload.encode()).hexdigest()[:6]
+STREAM_HASH_LENGTH = 16
+
+
+def get_stream_secret():
+    return Config.STREAM_SECRET or Config.BOT_TOKEN
+
+
+def make_stream_hash(chat_id, message_id, file_unique_id, secret=None):
+    # Keep in sync with web/stream_utils.make_stream_hash.
+    secret = secret or get_stream_secret()
+    payload = f"{chat_id}:{message_id}:{file_unique_id}".encode()
+    digest = hmac_new(secret.encode(), payload, sha256).hexdigest()
+    return digest[:STREAM_HASH_LENGTH]
 
 
 def build_stream_links(message):
@@ -68,7 +79,7 @@ def build_stream_links(message):
 
     message_id = message.id
     file_name = get_file_name(message)
-    file_hash = make_stream_hash(message_id, file_unique_id)
+    file_hash = make_stream_hash(message.chat.id, message_id, file_unique_id)
     encoded_name = quote_plus(file_name, safe="")
     root = Config.STREAM_BASE_URL.rstrip("/")
 

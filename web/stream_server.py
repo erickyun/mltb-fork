@@ -1,12 +1,16 @@
 import math
 from ast import literal_eval
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from ipaddress import ip_address
 from logging import getLogger
 from mimetypes import guess_type
 from os import getenv
+from time import monotonic
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 from pyrogram import Client
 
 from bot.core.config_manager import Config
@@ -14,6 +18,8 @@ from web.stream_utils import (
     build_content_disposition,
     get_file_name,
     get_media_from_message,
+    is_active_mime,
+    STREAM_HASH_LENGTH,
     verify_stream_hash,
 )
 
@@ -23,6 +29,87 @@ LOGGER = getLogger(__name__)
 Config.load()
 
 STREAM_CLIENTS = []
+
+# Abuse protection (in-memory, single gunicorn worker).
+FAIL_WINDOW = 600  # seconds
+MAX_FAILS_PER_IP = 20  # invalid/unknown links per window before blocking
+MAX_STREAMS_PER_IP = 4  # concurrent downloads per IP
+MAX_STREAMS_TOTAL = 32  # concurrent downloads overall
+
+_failures = defaultdict(deque)
+_active_per_ip = defaultdict(int)
+_active_total = 0
+
+
+def _stream_secret():
+    return Config.STREAM_SECRET or Config.BOT_TOKEN
+
+
+def client_ip(request):
+    direct = request.client.host if request.client else ""
+    try:
+        addr = ip_address(direct)
+        trusted_proxy = addr.is_loopback or addr.is_private
+    except ValueError:
+        trusted_proxy = False
+    # Only trust forwarding headers from a local reverse proxy (cloudflared, nginx...).
+    if trusted_proxy:
+        forwarded = request.headers.get("cf-connecting-ip") or (
+            request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        )
+        if forwarded:
+            return forwarded
+    return direct or "unknown"
+
+
+def _prune_failures(ip, now):
+    attempts = _failures.get(ip)
+    if not attempts:
+        return 0
+    while attempts and now - attempts[0] > FAIL_WINDOW:
+        attempts.popleft()
+    if not attempts:
+        _failures.pop(ip, None)
+        return 0
+    return len(attempts)
+
+
+def check_blocked(ip):
+    if _prune_failures(ip, monotonic()) >= MAX_FAILS_PER_IP:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many invalid requests",
+            headers={"Retry-After": str(FAIL_WINDOW)},
+        )
+
+
+def record_failure(ip):
+    now = monotonic()
+    _prune_failures(ip, now)
+    _failures[ip].append(now)
+    if len(_failures) > 10000:
+        for key in list(_failures)[:1000]:
+            _failures.pop(key, None)
+
+
+def acquire_stream_slot(ip):
+    global _active_total
+    if _active_total >= MAX_STREAMS_TOTAL or _active_per_ip[ip] >= MAX_STREAMS_PER_IP:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many concurrent downloads",
+            headers={"Retry-After": "30"},
+        )
+    _active_total += 1
+    _active_per_ip[ip] += 1
+
+
+def release_stream_slot(ip):
+    global _active_total
+    _active_total = max(0, _active_total - 1)
+    _active_per_ip[ip] -= 1
+    if _active_per_ip[ip] <= 0:
+        _active_per_ip.pop(ip, None)
 
 
 def _is_meaningful_stream_value(key, value):
@@ -53,6 +140,7 @@ def _apply_stream_config(data, source):
         "STREAM_PORT",
         "STREAM_CHANNEL",
         "STREAM_BOT_TOKENS",
+        "STREAM_SECRET",
     ):
         if key not in data:
             continue
@@ -82,6 +170,9 @@ def _load_stream_config_from_env():
 
     if getenv("STREAM_CHANNEL") is not None:
         env_data["STREAM_CHANNEL"] = getenv("STREAM_CHANNEL")
+
+    if getenv("STREAM_SECRET"):
+        env_data["STREAM_SECRET"] = getenv("STREAM_SECRET")
 
     if getenv("STREAM_BOT_TOKENS") is not None:
         try:
@@ -299,15 +390,7 @@ async def iter_file(client, message, start, end, chunk_size=1024 * 1024):
 
 @app.get("/")
 async def root():
-    return JSONResponse(
-        {
-            "status": "running",
-            "base": Config.STREAM_BASE_URL,
-            "channel": Config.STREAM_CHANNEL,
-            "clients": len(STREAM_CLIENTS),
-            "loads": [item.load for item in STREAM_CLIENTS],
-        }
-    )
+    return JSONResponse({"status": "running"})
 
 
 async def serve_telegram_file(
@@ -320,6 +403,18 @@ async def serve_telegram_file(
     if not Config.STREAM_CHANNEL:
         raise HTTPException(status_code=503, detail="Streaming is disabled")
 
+    ip = client_ip(request)
+    check_blocked(ip)
+
+    # Only the configured stream channel may be served.
+    try:
+        allowed_chat = int(chat_id) == int(Config.STREAM_CHANNEL)
+    except (TypeError, ValueError):
+        allowed_chat = False
+    if not allowed_chat or not file_hash or len(file_hash) != STREAM_HASH_LENGTH:
+        record_failure(ip)
+        raise HTTPException(status_code=404, detail="Not Found")
+
     worker = select_client()
 
     try:
@@ -330,10 +425,12 @@ async def serve_telegram_file(
         )
     except Exception as error:
         LOGGER.error(f"Unable to get Telegram file: {error}")
-        raise HTTPException(status_code=404, detail="Telegram file not found") from error
+        record_failure(ip)
+        raise HTTPException(status_code=404, detail="Not Found") from None
 
-    if not verify_stream_hash(file_hash, chat_id, message_id, media):
-        raise HTTPException(status_code=403, detail="Invalid stream link")
+    if not verify_stream_hash(_stream_secret(), file_hash, chat_id, message_id, media):
+        record_failure(ip)
+        raise HTTPException(status_code=404, detail="Not Found")
 
     file_size = getattr(media, "file_size", 0)
 
@@ -359,9 +456,17 @@ async def serve_telegram_file(
         or "application/octet-stream"
     )
 
+    if is_active_mime(mime_type):
+        # Never render HTML/SVG/JS/PDF from our origin.
+        disposition = "attachment"
+        mime_type = "application/octet-stream"
+
     content_length = end - start + 1
 
     headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self'; media-src 'self'",
+        "Referrer-Policy": "no-referrer",
         "Accept-Ranges": "bytes",
         "Content-Length": str(content_length),
         "Content-Disposition": build_content_disposition(disposition, file_name),
@@ -379,20 +484,33 @@ async def serve_telegram_file(
             headers=headers,
         )
 
+    acquire_stream_slot(ip)
     worker.load += 1
+    released = False
+
+    def release():
+        nonlocal released
+        if not released:
+            released = True
+            worker.load -= 1
+            release_stream_slot(ip)
 
     async def body():
         try:
             async for part in iter_file(worker.client, message, start, end):
                 yield part
         finally:
-            worker.load -= 1
+            release()
+
+    async def release_task():
+        release()
 
     return StreamingResponse(
         body(),
         status_code=status_code,
         media_type=mime_type,
         headers=headers,
+        background=BackgroundTask(release_task),
     )
 
 
@@ -482,11 +600,11 @@ async def public_short(
     request: Request,
     short_code: str,
 ):
-    if len(short_code) <= 6:
+    if len(short_code) <= STREAM_HASH_LENGTH:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    file_hash = short_code[:6]
-    message_id_text = short_code[6:]
+    file_hash = short_code[:STREAM_HASH_LENGTH]
+    message_id_text = short_code[STREAM_HASH_LENGTH:]
 
     if not message_id_text.isdigit():
         raise HTTPException(status_code=404, detail="Not Found")

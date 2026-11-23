@@ -20,6 +20,7 @@ STREAM_BASE_URL = ""
 STREAM_PORT = 8088
 STREAM_CHANNEL = 0
 STREAM_BOT_TOKENS = []
+STREAM_SECRET = ""  # optional; signs stream links (defaults to BOT_TOKEN). Changing it invalidates old links
 ALLDEBRID_API_KEY = ""
 BUZZHEAVIER_ACCOUNT_ID = ""
 BUZZHEAVIER_FOLDER_ID = ""

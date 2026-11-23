@@ -1,5 +1,5 @@
 from hashlib import sha256
-from hmac import compare_digest
+from hmac import compare_digest, new as hmac_new
 from urllib.parse import quote
 
 
@@ -45,25 +45,44 @@ def get_file_name(message):
     return f"{media_type}-{message.id}{suffix}"
 
 
-def make_stream_hash(message_id, file_unique_id):
-    payload = f"{message_id}:{file_unique_id}"
-    return sha256(payload.encode()).hexdigest()[:6]
+STREAM_HASH_LENGTH = 16
+
+# Content types that a browser could execute when rendered inline.
+ACTIVE_MIME_TYPES = {
+    "text/html",
+    "application/xhtml+xml",
+    "image/svg+xml",
+    "text/xml",
+    "application/xml",
+    "text/javascript",
+    "application/javascript",
+    "application/x-javascript",
+    "application/pdf",
+}
 
 
-def make_legacy_stream_token(chat_id, message_id, file_unique_id):
-    payload = f"{chat_id}:{message_id}:{file_unique_id}"
-    return sha256(payload.encode()).hexdigest()[:32]
+def _stream_secret(secret):
+    if not secret:
+        raise ValueError("Stream secret is empty")
+    return secret.encode() if isinstance(secret, str) else secret
 
 
-def verify_stream_hash(value, chat_id, message_id, media):
+def make_stream_hash(secret, chat_id, message_id, file_unique_id):
+    payload = f"{chat_id}:{message_id}:{file_unique_id}".encode()
+    digest = hmac_new(_stream_secret(secret), payload, sha256).hexdigest()
+    return digest[:STREAM_HASH_LENGTH]
+
+
+def verify_stream_hash(secret, value, chat_id, message_id, media):
     file_unique_id = getattr(media, "file_unique_id", "")
-    if not value or not file_unique_id:
+    if not value or not file_unique_id or len(value) != STREAM_HASH_LENGTH:
         return False
+    expected = make_stream_hash(secret, chat_id, message_id, file_unique_id)
+    return compare_digest(value.lower(), expected)
 
-    short_hash = make_stream_hash(message_id, file_unique_id)
-    legacy_token = make_legacy_stream_token(chat_id, message_id, file_unique_id)
 
-    return compare_digest(value, short_hash) or compare_digest(value, legacy_token)
+def is_active_mime(mime_type):
+    return (mime_type or "").split(";", 1)[0].strip().lower() in ACTIVE_MIME_TYPES
 
 
 def build_content_disposition(disposition, file_name):
