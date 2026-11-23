@@ -261,6 +261,41 @@ def select_client():
     return min(STREAM_CLIENTS, key=lambda item: item.load)
 
 
+async def _start_stream_client(index, token):
+    name = f"stream_{index}_{token.split(':', 1)[0]}"
+    client = Client(
+        name,
+        api_id=Config.TELEGRAM_API,
+        api_hash=Config.TELEGRAM_HASH,
+        bot_token=token,
+        proxy=Config.TG_PROXY or None,
+        in_memory=True,
+        no_updates=True,
+        sleep_threshold=60,
+    )
+    try:
+        await client.start()
+    except Exception as error:
+        LOGGER.error(f"Stream client {name} failed to start: {error}")
+        return None
+
+    # The bot must be a member (admin) of STREAM_CHANNEL, otherwise every
+    # request fails with CHANNEL_INVALID. Check once and skip such bots.
+    try:
+        await client.get_chat(Config.STREAM_CHANNEL)
+    except Exception as error:
+        LOGGER.error(
+            f"Stream client {name} cannot access STREAM_CHANNEL "
+            f"{Config.STREAM_CHANNEL}: {error}. Add this bot to the channel as admin. Skipping it."
+        )
+        try:
+            await client.stop()
+        except Exception:
+            pass
+        return None
+    return StreamClient(client)
+
+
 async def start_clients():
     tokens = []
 
@@ -278,23 +313,23 @@ async def start_clients():
         LOGGER.info("Stream client mode: main BOT_TOKEN fallback")
 
     for index, token in enumerate(tokens):
-        name = f"stream_{index}_{token.split(':', 1)[0]}"
+        if item := await _start_stream_client(index, token):
+            STREAM_CLIENTS.append(item)
 
-        client = Client(
-            name,
-            api_id=Config.TELEGRAM_API,
-            api_hash=Config.TELEGRAM_HASH,
-            bot_token=token,
-            proxy=Config.TG_PROXY or None,
-            in_memory=True,
-            no_updates=True,
-            sleep_threshold=60,
+    if not STREAM_CLIENTS and Config.BOT_TOKEN and Config.BOT_TOKEN not in tokens:
+        LOGGER.warning(
+            "No STREAM_BOT_TOKENS bot can access STREAM_CHANNEL, falling back to main BOT_TOKEN"
         )
+        if item := await _start_stream_client(len(tokens), Config.BOT_TOKEN):
+            STREAM_CLIENTS.append(item)
 
-        await client.start()
-        STREAM_CLIENTS.append(StreamClient(client))
-
-    LOGGER.info(f"Started {len(STREAM_CLIENTS)} stream client(s)")
+    if STREAM_CLIENTS:
+        LOGGER.info(f"Started {len(STREAM_CLIENTS)} stream client(s)")
+    else:
+        LOGGER.error(
+            "No stream client can access STREAM_CHANNEL; stream links will not work. "
+            "Check STREAM_CHANNEL id and that the bot(s) are admins there."
+        )
 
 
 async def stop_clients():
