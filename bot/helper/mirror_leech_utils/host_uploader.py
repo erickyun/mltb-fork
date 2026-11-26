@@ -1274,6 +1274,176 @@ class HostUploader:
         self._upload_meta[link] = {"id": file_id}
         return link
 
+    # ---------------------------------------------------------------- AkiraBox
+    _AK_BASE = "https://akirabox.to"
+    _AK_PART = 100 * 1024 * 1024
+
+    def _ak_headers(self, json_body=False):
+        token = str(Config.AKIRABOX_TOKEN or "").strip().strip("'\"")
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        if not token:
+            raise RuntimeError(
+                "AKIRABOX_TOKEN is not set. Add your AkiraBox API token to config "
+                "(uploading through the API needs a Premium account)."
+            )
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; MLTB/1.0)",
+        }
+        if json_body:
+            headers["Content-Type"] = "application/json"
+        return headers
+
+    async def _ak_request(self, client, method, path, what, tries=4, **kwargs):
+        last = None
+        for attempt in range(1, tries + 1):
+            wait = min(30, 2**attempt)
+            try:
+                response = await client.request(method, f"{self._AK_BASE}{path}", **kwargs)
+            except HTTPError as exc:
+                last = RuntimeError(
+                    f"AkiraBox {what} failed: {type(exc).__name__}: {exc or 'network error'}"
+                )
+            else:
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                status = response.status_code
+                detail = (
+                    payload.get("error") or payload.get("message") or response.text[:300]
+                )
+                if status < 300 and payload.get("ok") is not False:
+                    return payload
+                if status in {401, 403}:
+                    raise RuntimeError(
+                        f"AkiraBox {what} refused [{status}]: {detail} — check AKIRABOX_TOKEN; "
+                        "API uploads need a Premium account, and accounts with 2FA "
+                        "need an X-OTP code the bot cannot provide"
+                    )
+                if status == 413:
+                    raise RuntimeError(f"AkiraBox file too large for this plan [413]: {detail}")
+                last = RuntimeError(f"AkiraBox {what} failed [{status}]: {detail}")
+                if status < 300 or (status != 429 and status < 500):
+                    raise last
+                if status == 429:
+                    try:
+                        wait = max(wait, float(response.headers.get("Retry-After") or 0))
+                    except ValueError:
+                        pass
+            if attempt < tries:
+                await asyncio_sleep(min(wait, 120))
+        raise last
+
+    @classmethod
+    def _ak_link(cls, payload):
+        """Find the public link in the complete response (its shape is not documented)."""
+        candidates = [payload]
+        for key in ("file", "data", "result"):
+            if isinstance(payload.get(key), dict):
+                candidates.append(payload[key])
+        for item in candidates:
+            for key in ("download_link", "downloadLink", "link", "url"):
+                value = item.get(key)
+                if isinstance(value, str) and value.startswith("http"):
+                    return value
+        for item in candidates:
+            for key in ("id", "hash", "fileId", "file_id"):
+                value = item.get(key)
+                if isinstance(value, str) and value:
+                    return f"{cls._AK_BASE}/{value}/file"
+        return None
+
+    async def _upload_akirabox(self, client, file_path):
+        headers = self._ak_headers()
+        file_size = await aiopath.getsize(file_path)
+        if file_size <= 0:
+            raise RuntimeError("AkiraBox: empty files are not supported by the bot")
+        name = ospath.basename(file_path)
+        params = {"file": name, "fileSize": file_size}
+        folder = str(Config.AKIRABOX_FOLDER or "").strip()
+        if folder:
+            if not folder.isdigit():
+                raise RuntimeError(
+                    "AKIRABOX_FOLDER must be the folder's numeric id (see GET /api/folders)"
+                )
+            params["folder"] = folder
+        start = await self._ak_request(
+            client, "POST", "/api/upload/start", "upload start", params=params, headers=headers
+        )
+        upload_id, key, provider = start.get("uploadId"), start.get("key"), start.get("providerId")
+        if not upload_id or not key or provider is None:
+            raise RuntimeError(f"AkiraBox returned unexpected upload data: {start}")
+        part_size = self._AK_PART
+        for size_key in ("partSize", "chunkSize", "partSizeBytes"):
+            if str(start.get(size_key) or "").isdigit() and int(start[size_key]) > 0:
+                part_size = int(start[size_key])
+                break
+        part_count = max(1, -(-file_size // part_size))
+
+        parts = []
+        done = 0
+        self._processed_bytes = 0
+        for number in range(1, part_count + 1):
+            start_byte = (number - 1) * part_size
+            length = min(part_size, file_size - start_byte)
+            for attempt in range(1, 6):
+                if self._listener.is_cancelled:
+                    raise CancelledError()
+                signed = await self._ak_request(
+                    client, "GET", "/api/upload/chunk-url", f"part {number} signing",
+                    params={"uploadId": upload_id, "part-number": number,
+                            "key": key, "providerId": provider},
+                    headers=headers,
+                )
+                url = signed.get("url")
+                if not url:
+                    raise RuntimeError(f"AkiraBox did not sign part {number}: {signed}")
+
+                def progress(sent, _done=done):
+                    self._processed_bytes = _done + sent
+
+                try:
+                    response = await client.put(
+                        url,
+                        content=RangeFileStream(self, file_path, start_byte, length, progress),
+                        headers={"Content-Length": str(length)},
+                    )
+                    code = response.status_code
+                    error = f"HTTP {code}: {response.text[:200]}"
+                except HTTPError as exc:
+                    code, error = 0, f"{type(exc).__name__}: {exc or 'network error'}"
+                if code and code < 300 and response.headers.get("ETag"):
+                    parts.append({"PartNumber": number, "ETag": response.headers["ETag"]})
+                    break
+                self._processed_bytes = done
+                if code and code < 300:
+                    error = "storage returned no ETag"
+                elif code and code not in {403, 408, 429} and code < 500:
+                    raise RuntimeError(f"AkiraBox part {number}/{part_count} rejected: {error}")
+                if attempt == 5:
+                    raise RuntimeError(f"AkiraBox part {number}/{part_count} failed: {error}")
+                LOGGER.warning(f"AkiraBox part {number} retry {attempt}: {error}")
+                await asyncio_sleep(min(30, 2**attempt))
+            done += length
+            self._processed_bytes = done
+
+        result = await self._ak_request(
+            client, "POST", "/api/upload/complete", "complete", tries=5,
+            params={"key": key, "providerId": provider},
+            json={"UploadId": upload_id, "MultipartUpload": {"Parts": parts}},
+            headers=self._ak_headers(json_body=True),
+        )
+        link = self._ak_link(result)
+        if not link:
+            raise RuntimeError(f"AkiraBox finished the upload but returned no link: {result}")
+        self._upload_meta[link] = {"id": link.rstrip("/").split("/")[-2]}
+        return link
+
     # --------------------------------------------------------------- FileDitch
     _FD_UPLOAD_URL = "https://new.fileditch.com/upload.php"
     _FD_CHUNK_URL = "https://new.fileditch.com/chunked.php"
@@ -1786,6 +1956,8 @@ class HostUploader:
             return await self._upload_filez(client, file_path)
         if self._host in {"mc", "mocha"}:
             return await self._upload_mocha(client, file_path)
+        if self._host in {"ak", "akirabox"}:
+            return await self._upload_akirabox(client, file_path)
 
         raise RuntimeError(f"Unknown upload host: {self._host}")
 

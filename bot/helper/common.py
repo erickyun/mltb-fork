@@ -283,7 +283,7 @@ class TaskConfig:
         default_upload = (
             self.user_dict.get("DEFAULT_UPLOAD", "") or Config.DEFAULT_UPLOAD
         )
-        DIRECT_UPLOADS = {"cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf", "dd", "dropdrive", "fd", "fileditch", "fz", "filez", "mc", "mocha"}
+        DIRECT_UPLOADS = {"cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf", "dd", "dropdrive", "fd", "fileditch", "fz", "filez", "mc", "mocha", "ak", "akirabox"}
 
         if self.is_leech:
             if (
