@@ -1444,6 +1444,88 @@ class HostUploader:
         self._upload_meta[link] = {"id": link.rstrip("/").split("/")[-2]}
         return link
 
+    # -------------------------------------------------------------- LuffyFiles
+    _LF_UPLOAD_URL = "https://luffyfiles.com/api/upload"
+    _LF_MAX = 5 * 1024**3  # one request per file, Cloudflare R2 single-object limit
+
+    async def _upload_luffyfiles(self, client, file_path):
+        file_size = await aiopath.getsize(file_path)
+        if file_size <= 0:
+            raise RuntimeError("LuffyFiles does not accept empty files")
+        if file_size > self._LF_MAX:
+            raise RuntimeError("LuffyFiles accepts at most 5 GB per file through the API")
+        name = ospath.basename(file_path)
+        fields = {"filename": name}
+        retention = str(Config.LUFFYFILES_RETENTION or "").strip()
+        if retention:
+            if retention not in {"1", "2", "3", "4", "5"}:
+                raise RuntimeError(
+                    "LUFFYFILES_RETENTION must be 1 (1h), 2 (24h), 3 (7d), 4 (30d) or 5 (never)"
+                )
+            fields["retention_option"] = retention
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; MLTB/1.0)",
+        }
+        token = str(Config.LUFFYFILES_TOKEN or "").strip().strip("'\"")
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        errors = []
+        for attempt in range(1, 4):
+            if self._listener.is_cancelled:
+                raise CancelledError()
+            self._processed_bytes = 0
+            wait = 5 * attempt
+            stream = MultipartFileStream(self, file_path, file_size, fields, "file")
+            try:
+                response = await client.post(
+                    self._LF_UPLOAD_URL,
+                    content=stream,
+                    headers={
+                        **headers,
+                        "Content-Type": f"multipart/form-data; boundary={stream.boundary}",
+                        "Content-Length": str(stream.content_length),
+                    },
+                )
+            except HTTPError as exc:
+                errors.append(
+                    f"try{attempt} {type(exc).__name__}: {str(exc).strip() or 'network error'}"
+                )
+            else:
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                status = response.status_code
+                detail = payload.get("message") or payload.get("error") or response.text[:300]
+                link = payload.get("file_url") or payload.get("download_url")
+                if status < 300 and link:
+                    self._upload_meta[link] = {"id": payload.get("fileid")}
+                    return link
+                if status == 401:
+                    raise RuntimeError(
+                        f"LuffyFiles auth failed [401] — check LUFFYFILES_TOKEN: {detail}"
+                    )
+                if status < 300:
+                    raise RuntimeError(f"LuffyFiles response missing file_url: {payload or detail}")
+                if status in {400, 403, 413, 415, 422}:
+                    raise RuntimeError(f"LuffyFiles refused the upload [{status}]: {detail}")
+                errors.append(f"try{attempt} HTTP {status}: {detail}")
+                if status == 429:
+                    try:
+                        wait = max(wait, float(response.headers.get("Retry-After") or 0))
+                    except ValueError:
+                        pass
+            LOGGER.warning(f"LuffyFiles upload attempt {attempt} failed: {errors[-1]}")
+            if attempt < 3:
+                await asyncio_sleep(min(wait, 300))
+        raise RuntimeError(" | ".join(errors))
+
     # --------------------------------------------------------------- FileDitch
     _FD_UPLOAD_URL = "https://new.fileditch.com/upload.php"
     _FD_CHUNK_URL = "https://new.fileditch.com/chunked.php"
@@ -1958,6 +2040,8 @@ class HostUploader:
             return await self._upload_mocha(client, file_path)
         if self._host in {"ak", "akirabox"}:
             return await self._upload_akirabox(client, file_path)
+        if self._host in {"lf", "luffyfiles"}:
+            return await self._upload_luffyfiles(client, file_path)
 
         raise RuntimeError(f"Unknown upload host: {self._host}")
 

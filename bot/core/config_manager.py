@@ -32,6 +32,8 @@ class Config:
     MOCHA_PATH = "/"
     AKIRABOX_TOKEN = ""
     AKIRABOX_FOLDER = ""
+    LUFFYFILES_TOKEN = ""
+    LUFFYFILES_RETENTION = ""
     URL_SHORTENER = "spoome"
     URL_SHORTENER_PROXY = ""
     TLY_API_TOKEN = ""
@@ -168,7 +170,7 @@ class Config:
         if isinstance(converted_value, str):
             converted_value = converted_value.strip()
 
-        if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf", "cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf", "dd", "dropdrive", "fd", "fileditch", "fz", "filez", "mc", "mocha", "ak", "akirabox"}:
+        if attr == "DEFAULT_UPLOAD" and converted_value not in {"gd", "bh", "gf", "cb", "lb", "pd", "vf", "imgur", "ic", "ibb", "kf", "dd", "dropdrive", "fd", "fileditch", "fz", "filez", "mc", "mocha", "ak", "akirabox", "lf", "luffyfiles"}:
             return "rc"
 
         if attr == "URL_SHORTENER" and converted_value not in {
